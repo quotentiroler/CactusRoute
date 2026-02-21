@@ -27,6 +27,7 @@ Usage:
 
 import sys
 import os
+import json
 import unittest
 from unittest.mock import patch, MagicMock
 
@@ -2392,6 +2393,83 @@ class TestSemanticValidationRejectsWrongValues(unittest.TestCase):
         valid, reason = semantic_validate(calls, [TOOL_CREATE_REMINDER], user_text)
         self.assertFalse(valid, f"Should reject partial title 'call dentist', got: {reason}")
         self.assertIn("extract-mismatch", reason.lower())
+
+
+class TestFullPipelineFallback(unittest.TestCase):
+    """Test that generate_hybrid falls back to extraction when model returns wrong values."""
+
+    def test_reminder_among_four_with_wrong_model_output(self):
+        """When cactus returns wrong title, should fall back to extraction and get correct result."""
+        # Benchmark tool definitions
+        BENCH_TOOL_CREATE_REMINDER = {
+            "name": "create_reminder",
+            "description": "Create a reminder with a title and time",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Reminder title"},
+                    "time": {"type": "string", "description": "Time for the reminder (e.g. 3:00 PM)"},
+                },
+                "required": ["title", "time"],
+            },
+        }
+        BENCH_TOOLS = [TOOL_GET_WEATHER, TOOL_SEND_MESSAGE, BENCH_TOOL_CREATE_REMINDER, TOOL_SET_ALARM]
+        
+        user_text = "Remind me to call the dentist at 2:00 PM."
+        
+        # Mock cactus to return WRONG title
+        wrong_output = json.dumps({
+            "function_calls": [
+                {"name": "create_reminder", "arguments": {"title": "dentist", "time": "2:00 PM"}}
+            ],
+            "confidence": 0.9,
+            "total_time_ms": 50
+        })
+        
+        with patch("main.cactus_complete", return_value=wrong_output):
+            result = generate_hybrid(
+                [{"role": "user", "content": user_text}],
+                BENCH_TOOLS
+            )
+        
+        # Should have fallen back to extraction and produced correct result
+        self.assertEqual(len(result["function_calls"]), 1)
+        call = result["function_calls"][0]
+        self.assertEqual(call["name"], "create_reminder")
+        self.assertEqual(call["arguments"]["title"], "call the dentist",
+                        f"Expected 'call the dentist', got '{call['arguments'].get('title')}'")
+        self.assertEqual(call["arguments"]["time"], "2:00 PM",
+                        f"Expected '2:00 PM', got '{call['arguments'].get('time')}'")
+        # Should be on-device (extraction), not cloud
+        self.assertEqual(result.get("source"), "on-device",
+                        f"Expected source='on-device', got '{result.get('source')}'")
+
+    def test_timer_among_three_with_wrong_model_output(self):
+        """When cactus returns wrong minutes, should fall back to extraction."""
+        BENCH_TOOLS = [TOOL_SET_ALARM, TOOL_SET_TIMER, TOOL_PLAY_MUSIC]
+        user_text = "Set a timer for 10 minutes."
+        
+        wrong_output = json.dumps({
+            "function_calls": [
+                {"name": "set_timer", "arguments": {"minutes": 5}}
+            ],
+            "confidence": 0.9,
+            "total_time_ms": 50
+        })
+        
+        with patch("main.cactus_complete", return_value=wrong_output):
+            result = generate_hybrid(
+                [{"role": "user", "content": user_text}],
+                BENCH_TOOLS
+            )
+        
+        # Should have fallen back to extraction
+        self.assertEqual(len(result["function_calls"]), 1)
+        call = result["function_calls"][0]
+        self.assertEqual(call["name"], "set_timer")
+        self.assertEqual(call["arguments"]["minutes"], 10,
+                        f"Expected 10, got {call['arguments'].get('minutes')}")
+        self.assertEqual(result.get("source"), "on-device")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

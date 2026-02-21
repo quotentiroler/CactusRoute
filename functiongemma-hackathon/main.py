@@ -571,8 +571,14 @@ def _tool_relevance(tool, user_text):
     return score
 
 
-def build_calls_from_text(user_text, tools):
-    """Build function calls from text extraction. Returns list of valid calls."""
+def build_calls_from_text(user_text, tools, max_calls=None):
+    """Build function calls from text extraction. Returns list of valid calls.
+    
+    Args:
+        user_text: The user's query text
+        tools: List of tool definitions
+        max_calls: Maximum number of calls to return (None = all matches)
+    """
     candidates = []
     for tool in tools:
         props = tool["parameters"].get("properties", {})
@@ -605,6 +611,9 @@ def build_calls_from_text(user_text, tools):
         if c["name"] not in seen:
             seen.add(c["name"])
             result.append({"name": c["name"], "arguments": c["arguments"]})
+            # Limit output if max_calls is specified
+            if max_calls is not None and len(result) >= max_calls:
+                break
     return result
 
 
@@ -898,10 +907,14 @@ def _try_extraction_then_cloud(messages, tools, local, difficulty, user_text, re
     """Try deterministic extraction; fall to cloud only if extraction also fails."""
     local_time = local.get("total_time_ms", 0)
 
+    # Determine how many calls to extract
+    expected_intents = count_expected_intents(messages)
+    
     if difficulty == "hard":
         det_calls = build_calls_from_segments(user_text, tools)
     else:
-        det_calls = build_calls_from_text(user_text, tools)
+        # For easy/medium, limit extraction to expected intent count
+        det_calls = build_calls_from_text(user_text, tools, max_calls=expected_intents)
 
     if det_calls:
         coerce_arg_types(det_calls, tools)
