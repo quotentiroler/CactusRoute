@@ -442,6 +442,16 @@ def semantic_validate(calls, tools, user_text):
                 val_words = set(re.findall(r'[a-z]{3,}', val.lower())) - _STOP_WORDS
                 if val_words and not val_words & text_words:
                     return False, f"semantic:{pname}={val}"
+                
+                # For extractable string roles, check extraction matches EXACTLY
+                if role in (ROLE_TITLE, ROLE_SONG, ROLE_LOCATION, ROLE_MESSAGE):
+                    extracted = extract_for_role(role, user_text)
+                    if extracted is not None:
+                        ext_norm = extracted.strip().lower()
+                        val_norm = val.strip().lower()
+                        # Require exact match - no partial matching allowed
+                        if ext_norm != val_norm:
+                            return False, f"extract-mismatch:{pname}='{val}' vs extracted='{extracted}'"
 
             # Integer range checks
             if ptype == "integer" and isinstance(val, (int, float)):
@@ -452,6 +462,12 @@ def semantic_validate(calls, tools, user_text):
                     return False, f"range:{pname}={iv}"
                 if role == ROLE_DURATION and iv <= 0:
                     return False, f"range:{pname}={iv}"
+                
+                # For extractable integer roles, check extraction matches
+                if role in (ROLE_DURATION, ROLE_HOUR, ROLE_MINUTE):
+                    extracted = extract_for_role(role, user_text)
+                    if extracted is not None and iv != extracted:
+                        return False, f"extract-mismatch:{pname}={iv} vs extracted={extracted}"
 
     return True, "ok"
 
