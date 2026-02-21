@@ -3,7 +3,7 @@
 CactusRoute Demo — Adaptive Edge/Cloud Voice-to-Action Assistant
 ================================================================
 
-A sophisticated demo showcasing the multi-signal adaptive routing strategy
+A sophisticated demo showcasing the 7-layer schema-driven adaptive framework
 that dynamically routes function calls between FunctionGemma (270M on-device)
 and Gemini 2.5 Flash (cloud).
 
@@ -658,9 +658,10 @@ def comparison_mode():
         console.print()
         console.print(Panel(
             "[bold]Key Insight:[/bold] The baseline uses threshold=0.99, sending almost "
-            "everything to cloud.\nCactusRoute uses adaptive thresholds (0.25/0.45/0.60) "
-            "based on pre-flight difficulty estimation,\nkeeping easy and medium queries "
-            "on-device while selectively routing hard queries.",
+            "everything to cloud.\nCactusRoute uses a 7-layer pipeline: adaptive thresholds "
+            "(0.25/0.45/0.60), schema-driven output repair,\nmulti-gate validation "
+            "(structural + semantic), retry with prompt variation, and deterministic\n"
+            "extraction — maximizing on-device ratio while maintaining high F1.",
             border_style="green",
         ))
 
@@ -686,15 +687,18 @@ def print_banner():
     banner = """
    ╔═══════════════════════════════════════════════════════════════╗
    ║                                                               ║
-   ║   🌵  CactusRoute — Adaptive Edge/Cloud Hybrid Router        ║
+   ║   🌵  CactusRoute — 7-Layer Adaptive Hybrid Router            ║
    ║                                                               ║
    ║   FunctionGemma 270M (on-device)  ↔  Gemini 2.5 Flash (cloud)║
    ║                                                               ║
-   ║   Multi-signal routing:                                       ║
-   ║     • Pre-flight difficulty estimation                        ║
-   ║     • Adaptive confidence thresholds (easy/medium/hard)       ║
-   ║     • Cactus handoff signals (cloud_handoff / spike_handoff)  ║
-   ║     • Output validation + intent coverage                    ║
+   ║   7-Layer Schema-Driven Pipeline:                             ║
+   ║     1. Pre-flight difficulty estimation                       ║
+   ║     2. Cactus handoff signals (entropy-based)                 ║
+   ║     3. Schema-driven output repair (AM/PM, types)             ║
+   ║     4. Multi-gate validation (structural + semantic)          ║
+   ║     5. Adaptive confidence thresholds (0.25/0.45/0.60)       ║
+   ║     6. Retry with alternate prompt                            ║
+   ║     7. Deterministic extraction + cloud fallback              ║
    ║                                                               ║
    ╚═══════════════════════════════════════════════════════════════╝
 """
@@ -713,9 +717,9 @@ def print_banner():
         t.add_column("Difficulty", style="bold")
         t.add_column("Threshold")
         t.add_column("Strategy")
-        t.add_row("[green]Easy[/green]", "0.25", "1 tool → nearly always on-device")
-        t.add_row("[yellow]Medium[/yellow]", "0.45", "Multi-tool selection → moderate bar")
-        t.add_row("[red]Hard[/red]", "0.60", "Multi-call → higher bar, try local first")
+        t.add_row("[green]Easy[/green]", "0.25", "1 tool → repair + validate → nearly always on-device")
+        t.add_row("[yellow]Medium[/yellow]", "0.45", "Multi-tool → repair + validate + retry if needed")
+        t.add_row("[red]Hard[/red]", "0.60", "Multi-call → full 7-layer pipeline, extraction fallback")
         console.print(t)
 
 
