@@ -3,12 +3,15 @@ CactusRoute — Multi-Signal Adaptive Hybrid Router
 ==================================================
 
 Routes function-calling queries between FunctionGemma (270M on-device via Cactus)
-and Gemini 2.5 Flash (cloud) using a 4-signal decision framework:
+and Gemini 2.5 Flash (cloud) using a 7-layer adaptive framework:
 
   1. Pre-flight difficulty estimation   (zero-cost heuristic)
   2. Cactus handoff signals             (cloud_handoff / spike_handoff)
-  3. Adaptive confidence thresholds     (per-difficulty, research-calibrated)
-  4. Output structural validation       (tool names + required params + intent coverage)
+  3. Schema-driven output repair        (AM/PM, negatives, semantic mismatches)
+  4. Multi-gate validation              (structural + semantic + intent coverage)
+  5. Adaptive confidence thresholds     (per-difficulty, research-calibrated)
+  6. Retry with alternate prompt        (cheap second chance on-device)
+  7. Deterministic extraction fallback  (schema-driven text parsing)
 
 Research basis:
   - STEER (arxiv 2511.06190): logit confidence is bimodal, dynamic > fixed thresholds
@@ -207,10 +210,422 @@ def validate_output(function_calls, tools):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Schema-Driven Role Inference
+#
+# Infers semantic roles (person, location, message, time, etc.) from parameter
+# names and schema metadata. This is the key to generalizing extraction to
+# unseen tool definitions — we don't hardcode per-tool behavior.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+ROLE_PERSON = "person"
+ROLE_LOCATION = "location"
+ROLE_MESSAGE = "message"
+ROLE_HOUR = "hour"
+ROLE_MINUTE = "minute"
+ROLE_DURATION = "duration"
+ROLE_TITLE = "title"
+ROLE_TIME_STR = "time_string"
+ROLE_SONG = "song"
+ROLE_QUERY = "query"
+ROLE_UNKNOWN = "unknown"
+
+
+def infer_param_role(param_name, param_info):
+    """Infer semantic role from parameter name and schema metadata.
+
+    Schema-driven: uses parameter names and descriptions, not tool names.
+    This generalizes to unseen tool definitions in held-out evaluation.
+    """
+    name = param_name.lower()
+    desc = (param_info.get("description") or "").lower()
+    ptype = (param_info.get("type") or "string").lower()
+
+    if ptype == "string":
+        if any(k in name for k in ("recipient", "person", "contact")):
+            return ROLE_PERSON
+        if name == "name" and any(k in desc for k in ("person", "contact")):
+            return ROLE_PERSON
+        if any(k in name for k in ("location", "city", "place")) or \
+           any(k in desc for k in ("city",)):
+            return ROLE_LOCATION
+        if any(k in name for k in ("message", "content", "body")):
+            return ROLE_MESSAGE
+        if any(k in name for k in ("title", "note", "task")):
+            return ROLE_TITLE
+        if name == "time":
+            return ROLE_TIME_STR
+        if any(k in name for k in ("song", "track", "playlist")):
+            return ROLE_SONG
+        if any(k in name for k in ("query", "search")):
+            return ROLE_QUERY
+    elif ptype == "integer":
+        if "hour" in name:
+            return ROLE_HOUR
+        if name == "minute":
+            return ROLE_MINUTE
+        if any(k in name for k in ("minutes", "duration")):
+            return ROLE_DURATION
+
+    return ROLE_UNKNOWN
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Text Extraction Engine
+#
+# Extracts candidate values from user text for each semantic role.
+# Patterns are structural (not tool-specific) so they generalize to
+# diverse phrasings in held-out evaluation.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_TIME_RE = re.compile(r'(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b', re.I)
+_DURATION_RE = re.compile(r'(\d+)\s*(?:minutes?|mins?)\b', re.I)
+
+# Message content: "saying X" / "that says X" / implicit after "text [Person]"
+_MSG_PATTERNS = [
+    re.compile(
+        r'(?:saying|that\s+says?|say)\s+(.+?)'
+        r'(?:\s+and\s+(?:check|get|set|play|search|find|look|remind|text|send|wake|call)|[,.!?]|$)',
+        re.I,
+    ),
+    re.compile(
+        r'(?:text|message)\s+[A-Z][a-z]+\s+(.+?)'
+        r'(?:\s+and\s+(?:check|get|set|play|search|find|look|remind|text|send|wake|call)|[,.!?]|$)',
+        re.I,
+    ),
+]
+
+_PLAY_RE = re.compile(r'play\s+(?:some\s+)?(.+?)(?:\s+and\s+|[,.!?]|$)', re.I)
+
+# Location: capitalized words after "in" near weather, or standalone "in [City]"
+_LOC_PATTERNS = [
+    re.compile(r'weather\s+(?:like\s+)?in\s+([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*)'),
+    re.compile(r'(?:weather|forecast)\s+(?:like\s+)?in\s+(.+?)(?:\s+and\s+|[.!?,]|$)', re.I),
+    re.compile(r'\bin\s+([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*)'),
+]
+
+_REMIND_TITLE_RE = re.compile(
+    r'remind\s+me\s+(?:about|to)\s+(.+?)(?:\s+at\s+\d|[.!?]|$)', re.I,
+)
+
+_PERSON_PATTERNS = [
+    re.compile(r'[Ss]end\s+([A-Z][a-z]+)\s+(?:a\s+)?(?:message|text)'),
+    re.compile(r'(?:[Tt]o|[Tt]ext|[Mm]essage)\s+([A-Z][a-z]+)'),
+    re.compile(r'(?:[Ff]ind|[Ll]ook\s*up|[Ss]earch\s+for)\s+([A-Z][a-z]+)'),
+]
+
+_FIND_RE = re.compile(r'(?:[Ff]ind|[Ll]ook\s*up|[Ss]earch\s*(?:for)?)\s+([A-Z][a-z]+)')
+
+
+def extract_for_role(role, user_text):
+    """Extract a candidate value from user text for a given semantic role."""
+    if role == ROLE_PERSON:
+        for pat in _PERSON_PATTERNS:
+            m = pat.search(user_text)
+            if m:
+                return m.group(1)
+        return None
+
+    if role == ROLE_LOCATION:
+        for pat in _LOC_PATTERNS:
+            m = pat.search(user_text)
+            if m:
+                return m.group(1).strip().rstrip('.,!?')
+        return None
+
+    if role == ROLE_MESSAGE:
+        for pat in _MSG_PATTERNS:
+            m = pat.search(user_text)
+            if m:
+                return m.group(1).strip().rstrip('.,!?')
+        return None
+
+    if role == ROLE_HOUR:
+        m = _TIME_RE.search(user_text)
+        if not m:
+            return None
+        hour = int(m.group(1))
+        ampm = m.group(3).lower()
+        if ampm == "pm" and 1 <= hour <= 11:
+            hour += 12
+        elif ampm == "am" and hour == 12:
+            hour = 0
+        return hour
+
+    if role == ROLE_MINUTE:
+        m = _TIME_RE.search(user_text)
+        if not m:
+            return None
+        return int(m.group(2) or 0)
+
+    if role == ROLE_DURATION:
+        m = _DURATION_RE.search(user_text)
+        if m:
+            return int(m.group(1))
+        return None
+
+    if role == ROLE_TITLE:
+        m = _REMIND_TITLE_RE.search(user_text)
+        if m:
+            return m.group(1).strip().rstrip('.,!?')
+        return None
+
+    if role == ROLE_TIME_STR:
+        m = _TIME_RE.search(user_text)
+        if not m:
+            return None
+        hour = int(m.group(1))
+        minute = int(m.group(2) or 0)
+        ampm = m.group(3).upper()
+        return f"{hour}:{minute:02d} {ampm}"
+
+    if role == ROLE_SONG:
+        m = _PLAY_RE.search(user_text)
+        if m:
+            return m.group(1).strip().rstrip('.,!?')
+        return None
+
+    if role == ROLE_QUERY:
+        m = _FIND_RE.search(user_text)
+        if m:
+            return m.group(1)
+        return None
+
+    return None
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Semantic Validation
+#
+# Goes beyond structural validation: checks that argument VALUES make sense
+# relative to the user's text. Catches cases where FunctionGemma produces
+# valid JSON with wrong content (e.g., wrong recipient, hallucinated city).
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_STOP_WORDS = frozenset({
+    "the", "for", "and", "but", "not", "this", "that", "with",
+    "from", "about", "into", "what", "how", "can", "you", "your",
+    "please", "some", "like", "its", "has", "are", "was", "get",
+    "set", "send", "play", "find", "check", "make", "will",
+})
+
+
+def semantic_validate(calls, tools, user_text):
+    """Validate argument values against user text. Returns (ok, reason)."""
+    text_lower = user_text.lower()
+    text_words = set(re.findall(r'[a-z]{3,}', text_lower)) - _STOP_WORDS
+    tool_map = {t["name"]: t for t in tools}
+
+    for call in calls:
+        name = call.get("name", "")
+        if name not in tool_map:
+            return False, f"unknown-tool:{name}"
+        props = tool_map[name]["parameters"].get("properties", {})
+        args = call.get("arguments", {})
+
+        for pname, pinfo in props.items():
+            if pname not in args:
+                continue
+            val = args[pname]
+            ptype = (pinfo.get("type") or "string").lower()
+            role = infer_param_role(pname, pinfo)
+
+            # String values should share at least one content word with user text
+            if ptype == "string" and isinstance(val, str) and len(val.strip()) > 0:
+                val_words = set(re.findall(r'[a-z]{3,}', val.lower())) - _STOP_WORDS
+                if val_words and not val_words & text_words:
+                    return False, f"semantic:{pname}={val}"
+
+            # Integer range checks
+            if ptype == "integer" and isinstance(val, (int, float)):
+                iv = int(val)
+                if role == ROLE_HOUR and not (0 <= iv <= 23):
+                    return False, f"range:{pname}={iv}"
+                if role == ROLE_MINUTE and not (0 <= iv <= 59):
+                    return False, f"range:{pname}={iv}"
+                if role == ROLE_DURATION and iv <= 0:
+                    return False, f"range:{pname}={iv}"
+
+    return True, "ok"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Output Repair
+#
+# Fixes known FunctionGemma failure modes WITHOUT going to cloud:
+#   - AM/PM hour correction (returns 10 for "10 PM" → should be 22)
+#   - Negative integers → absolute value
+#   - Semantically wrong string values → replace with text extraction
+#   - Missing required parameters → fill from extraction
+#
+# This is the key differentiator: repair before fallback maximizes on-device
+# ratio while maintaining F1.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def repair_output(calls, tools, user_text):
+    """Repair model output in-place using schema-driven text extraction."""
+    tool_map = {t["name"]: t for t in tools}
+    text_lower = user_text.lower()
+    text_words = set(re.findall(r'[a-z]{3,}', text_lower)) - _STOP_WORDS
+    repaired = []
+
+    for call in calls:
+        name = call.get("name", "")
+        if name not in tool_map:
+            continue
+
+        props = tool_map[name]["parameters"].get("properties", {})
+        required = set(tool_map[name]["parameters"].get("required", []))
+        args = dict(call.get("arguments", {}))
+
+        for pname, pinfo in props.items():
+            role = infer_param_role(pname, pinfo)
+            ptype = (pinfo.get("type") or "string").lower()
+
+            # Fill missing required params via extraction
+            if pname not in args or args[pname] is None:
+                if pname in required:
+                    extracted = extract_for_role(role, user_text)
+                    if extracted is not None:
+                        args[pname] = extracted
+                continue
+
+            val = args[pname]
+
+            # AM/PM hour correction
+            if role == ROLE_HOUR and isinstance(val, (int, float)):
+                hour = int(val)
+                if "pm" in text_lower and 1 <= hour <= 11:
+                    args[pname] = hour + 12
+                elif "am" in text_lower and hour == 12:
+                    args[pname] = 0
+                elif hour < 0 or hour > 23:
+                    ext = extract_for_role(ROLE_HOUR, user_text)
+                    if ext is not None:
+                        args[pname] = ext
+
+            # Fix negative integers
+            if ptype == "integer" and isinstance(val, (int, float)):
+                if int(val) < 0:
+                    args[pname] = abs(int(val))
+
+            # Fix string values that don't match user text
+            if ptype == "string" and isinstance(val, str):
+                val_words = set(re.findall(r'[a-z]{3,}', val.lower())) - _STOP_WORDS
+                if val_words and not val_words & text_words:
+                    ext = extract_for_role(role, user_text)
+                    if ext is not None:
+                        args[pname] = ext
+
+        repaired.append({"name": name, "arguments": args})
+
+    return repaired
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Deterministic Extraction Fallback
+#
+# When the model fails entirely (handoff, low confidence, or invalid output),
+# this builds function calls purely from text extraction. Schema-driven:
+# scores tools by relevance, extracts parameters by inferred role.
+# Keeps execution on-device (no cloud call).
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _tool_relevance(tool, user_text):
+    """Score tool relevance to user text using name/description keywords."""
+    text_lower = user_text.lower()
+    score = 0
+    for word in tool["name"].replace("_", " ").split():
+        if word.lower() in text_lower:
+            score += 3
+    for word in tool.get("description", "").lower().split():
+        if len(word) > 3 and word in text_lower:
+            score += 1
+    return score
+
+
+def build_calls_from_text(user_text, tools):
+    """Build function calls from text extraction. Returns list of valid calls."""
+    candidates = []
+    for tool in tools:
+        props = tool["parameters"].get("properties", {})
+        required = set(tool["parameters"].get("required", []))
+
+        args = {}
+        for pname, pinfo in props.items():
+            role = infer_param_role(pname, pinfo)
+            val = extract_for_role(role, user_text)
+            if val is not None:
+                args[pname] = val
+
+        # Only include if all required params are satisfied
+        if required and required <= set(args.keys()):
+            relevance = _tool_relevance(tool, user_text)
+            candidates.append({
+                "name": tool["name"],
+                "arguments": args,
+                "relevance": relevance,
+            })
+
+    if not candidates:
+        return []
+
+    candidates.sort(key=lambda c: c["relevance"], reverse=True)
+
+    seen = set()
+    result = []
+    for c in candidates:
+        if c["name"] not in seen:
+            seen.add(c["name"])
+            result.append({"name": c["name"], "arguments": c["arguments"]})
+    return result
+
+
+def _segment_query(user_text):
+    """Split a multi-intent query into actionable segments."""
+    parts = re.split(
+        r'(?:,\s*(?:and\s+)?(?=[a-z]))'
+        r'|(?<=\w)\s+and\s+(?=(?:check|get|set|play|search|find|look|remind|text|send|wake|call))',
+        user_text, flags=re.I,
+    )
+    return [p.strip() for p in parts if len(p.strip()) > 3]
+
+
+def build_calls_from_segments(user_text, tools):
+    """Decompose query into segments and extract calls per segment."""
+    segments = _segment_query(user_text)
+    if len(segments) <= 1:
+        return build_calls_from_text(user_text, tools)
+
+    all_calls = []
+    used_tools = set()
+    for seg in segments:
+        seg_calls = build_calls_from_text(seg, tools)
+        for c in seg_calls:
+            if c["name"] not in used_tools:
+                used_tools.add(c["name"])
+                all_calls.append(c)
+
+    # If segmented extraction got fewer, try full text too
+    if not all_calls:
+        return build_calls_from_text(user_text, tools)
+
+    return all_calls
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # On-Device Inference (FunctionGemma via Cactus)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def generate_cactus(messages, tools, difficulty="medium"):
+_SYSTEM_PROMPTS = [
+    "You are a helpful assistant that can use tools.",
+    (
+        "You MUST call one of the available functions. Extract all parameter "
+        "values directly from the user's message. Match parameter types precisely."
+    ),
+]
+
+
+def generate_cactus(messages, tools, difficulty="medium", prompt_idx=0):
     """
     Run function calling on-device via FunctionGemma + Cactus.
 
@@ -220,6 +635,7 @@ def generate_cactus(messages, tools, difficulty="medium"):
       - Dynamic system prompt for multi-call queries
       - tool_rag_top_k=0 to consider ALL tools (critical for hard cases)
       - Type coercion on output arguments
+      - Alternate prompts for retry (prompt_idx)
     """
     model = _get_model()
 
@@ -235,7 +651,7 @@ def generate_cactus(messages, tools, difficulty="medium"):
             "distinct action requested."
         )
     else:
-        system = "You are a helpful assistant that can use tools."
+        system = _SYSTEM_PROMPTS[prompt_idx % len(_SYSTEM_PROMPTS)]
 
     cactus_tools = [{"type": "function", "function": t} for t in tools]
 
@@ -330,64 +746,157 @@ def generate_cloud(messages, tools):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Adaptive Hybrid Router — the core innovation
+# Adaptive Hybrid Router — 7-Layer Decision Framework
 #
-# Decision flow:
-#   1. Pre-flight → estimate difficulty → set adaptive threshold
-#   2. Always run FunctionGemma first (≈50-100ms at 3000 tok/s, nearly free)
-#   3. Evaluate 4 routing signals:
-#      a. cloud_handoff  — first-token entropy catastrophically high
-#      b. spike_handoff  — entropy spiked mid-generation
-#      c. confidence     — below adaptive difficulty-based threshold
-#      d. validation     — invalid tool names, missing params, or intent gap
-#   4. Fall back to cloud only when signals indicate low quality
+# Enhanced decision flow (competitive analysis → most sophisticated approach):
+#   1. Pre-flight difficulty estimation (zero cost)
+#   2. Local execution via FunctionGemma (~50-100ms)
+#   3. Schema-driven output repair: AM/PM, type coercion, semantic fixes
+#   4. Multi-gate validation: structural + semantic + intent coverage
+#   5. Accept if all gates pass and confidence ≥ adaptive threshold
+#   6. Retry with alternate prompt (cheap second chance on-device)
+#   7. Deterministic extraction fallback (schema-driven text parsing)
+#   8. Cloud fallback (absolute last resort)
+#
+# Key insight: maximize on-device ratio by REPAIRING local output before
+# deciding to fall back. Most competitors dump to cloud on any issue — we
+# fix it locally first, keeping both F1 and on-device ratio high.
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def generate_hybrid(messages, tools):
     """
-    Multi-signal adaptive routing between FunctionGemma (edge) and Gemini (cloud).
+    Multi-signal adaptive routing with repair, retry, and extraction fallback.
 
     This is the function evaluated by benchmark.py and the leaderboard.
     Do not modify the input/output signature.
     """
-    # ── Step 1: Pre-flight assessment (zero cost) ──
     difficulty = estimate_difficulty(messages, tools)
     threshold = THRESHOLDS[difficulty]
+    user_text = " ".join(m["content"] for m in messages if m["role"] == "user")
 
-    # ── Step 2: Speculative local execution (fast) ──
+    # ── Step 1: Local execution ──
     local = generate_cactus(messages, tools, difficulty=difficulty)
+    local_time = local.get("total_time_ms", 0)
 
-    # ── Signal A: Explicit handoff from Cactus engine ──
+    # ── Step 2: Hard handoff → try extraction before cloud ──
     if local.get("cloud_handoff") or not local.get("success", True):
-        return _fallback(messages, tools, local, difficulty, "handoff")
+        return _try_extraction_then_cloud(
+            messages, tools, local, difficulty, user_text, "handoff",
+        )
 
-    # ── Signal B: Entropy spike mid-generation ──
+    # ── Step 3: Entropy spike → try extraction before cloud ──
     if local.get("spike_handoff"):
-        return _fallback(messages, tools, local, difficulty, "spike")
+        return _try_extraction_then_cloud(
+            messages, tools, local, difficulty, user_text, "spike",
+        )
 
-    # ── Signal C: Adaptive confidence threshold ──
-    if local["confidence"] < threshold:
-        return _fallback(messages, tools, local, difficulty, "low-conf")
+    # ── Step 4: Repair local output (AM/PM, negatives, semantic) ──
+    repaired = repair_output(local["function_calls"], tools, user_text)
+    coerce_arg_types(repaired, tools)
+    local["function_calls"] = repaired
 
-    # ── Signal D: Output structural validation ──
-    is_valid, reason = validate_output(local["function_calls"], tools)
-    if not is_valid:
-        return _fallback(messages, tools, local, difficulty, reason)
+    # ── Step 5: Multi-gate validation ──
+    is_valid, reason = validate_output(repaired, tools)
+    sem_valid, sem_reason = (True, "ok")
+    if is_valid:
+        sem_valid, sem_reason = semantic_validate(repaired, tools, user_text)
 
-    # ── Signal E: Intent coverage for hard queries ──
+    # ── Step 6: Intent coverage for hard queries ──
+    intent_ok = True
+    if is_valid and sem_valid and difficulty == "hard":
+        expected = count_expected_intents(messages)
+        actual = len(repaired)
+        if actual < expected:
+            augmented = _augment_calls(repaired, tools, user_text)
+            if len(augmented) >= expected:
+                coerce_arg_types(augmented, tools)
+                local["function_calls"] = augmented
+            else:
+                intent_ok = False
+
+    # ── Step 7: Accept if all gates pass and confident ──
+    if is_valid and sem_valid and intent_ok and local["confidence"] >= threshold:
+        local["source"] = "on-device"
+        local["difficulty"] = difficulty
+        return local
+
+    # ── Step 8: Retry with alternate prompt ──
+    retry = generate_cactus(messages, tools, difficulty=difficulty, prompt_idx=1)
+    retry_time = retry.get("total_time_ms", 0)
+
+    if retry.get("success", True) and not retry.get("cloud_handoff"):
+        retry_repaired = repair_output(retry["function_calls"], tools, user_text)
+        coerce_arg_types(retry_repaired, tools)
+        rv, _ = validate_output(retry_repaired, tools)
+        sv = True
+        if rv:
+            sv, _ = semantic_validate(retry_repaired, tools, user_text)
+
+        if rv and sv:
+            iok = True
+            if difficulty == "hard":
+                expected = count_expected_intents(messages)
+                if len(retry_repaired) < expected:
+                    aug = _augment_calls(retry_repaired, tools, user_text)
+                    if len(aug) >= expected:
+                        retry_repaired = aug
+                    else:
+                        iok = False
+
+            if iok:
+                retry["function_calls"] = retry_repaired
+                retry["total_time_ms"] = local_time + retry_time
+                retry["source"] = "on-device (retry)"
+                retry["difficulty"] = difficulty
+                return retry
+
+    # ── Step 9: Deterministic extraction fallback ──
+    return _try_extraction_then_cloud(
+        messages, tools, local, difficulty, user_text,
+        reason or sem_reason or "retry-failed",
+    )
+
+
+def _augment_calls(existing_calls, tools, user_text):
+    """Add missing calls via text extraction to reach full intent coverage."""
+    existing_names = {c["name"] for c in existing_calls}
+    remaining_tools = [t for t in tools if t["name"] not in existing_names]
+    extra = build_calls_from_text(user_text, remaining_tools)
+    return existing_calls + extra if extra else existing_calls
+
+
+def _try_extraction_then_cloud(messages, tools, local, difficulty, user_text, reason):
+    """Try deterministic extraction; fall to cloud only if extraction also fails."""
+    local_time = local.get("total_time_ms", 0)
+
     if difficulty == "hard":
-        expected_intents = count_expected_intents(messages)
-        actual_calls = len(local["function_calls"])
-        if actual_calls < expected_intents:
-            return _fallback(
-                messages, tools, local, difficulty,
-                f"intent-gap:{actual_calls}/{expected_intents}",
-            )
+        det_calls = build_calls_from_segments(user_text, tools)
+    else:
+        det_calls = build_calls_from_text(user_text, tools)
 
-    # ── All signals passed — accept local result ──
-    local["source"] = "on-device"
-    local["difficulty"] = difficulty
-    return local
+    if det_calls:
+        coerce_arg_types(det_calls, tools)
+        dv, _ = validate_output(det_calls, tools)
+        ds = True
+        if dv:
+            ds, _ = semantic_validate(det_calls, tools, user_text)
+
+        intent_ok = True
+        if difficulty == "hard" and dv and ds:
+            expected = count_expected_intents(messages)
+            if len(det_calls) < expected:
+                intent_ok = False
+
+        if dv and ds and intent_ok:
+            return {
+                "function_calls": det_calls,
+                "total_time_ms": local_time,
+                "confidence": 0.5,
+                "source": "on-device (extracted)",
+                "difficulty": difficulty,
+            }
+
+    return _fallback(messages, tools, local, difficulty, reason)
 
 
 def _fallback(messages, tools, local, difficulty, reason):

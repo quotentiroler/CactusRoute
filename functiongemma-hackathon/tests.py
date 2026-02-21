@@ -50,6 +50,15 @@ from main import (
     generate_cactus,
     _fallback,
     THRESHOLDS,
+    infer_param_role,
+    extract_for_role,
+    semantic_validate,
+    repair_output,
+    build_calls_from_text,
+    build_calls_from_segments,
+    ROLE_PERSON, ROLE_LOCATION, ROLE_MESSAGE, ROLE_HOUR, ROLE_MINUTE,
+    ROLE_DURATION, ROLE_TITLE, ROLE_TIME_STR, ROLE_SONG, ROLE_QUERY,
+    ROLE_UNKNOWN,
 )
 
 
@@ -140,6 +149,19 @@ ALL_TOOLS = [
     TOOL_GET_WEATHER, TOOL_SET_ALARM, TOOL_SEND_MESSAGE,
     TOOL_CREATE_REMINDER, TOOL_SEARCH_CONTACTS, TOOL_PLAY_MUSIC, TOOL_SET_TIMER,
 ]
+
+# Custom tool with unusual param names — extraction CANNOT fill these
+TOOL_CUSTOM = {
+    "name": "custom_action",
+    "description": "Do something custom",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "data": {"type": "string", "description": "Some data"},
+        },
+        "required": ["data"],
+    },
+}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -432,10 +454,296 @@ class TestValidateOutput(unittest.TestCase):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Test: Schema-Driven Role Inference
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestInferParamRole(unittest.TestCase):
+    """Tests for infer_param_role() — maps param metadata to semantic roles."""
+
+    def test_recipient_is_person(self):
+        self.assertEqual(infer_param_role("recipient", {"type": "string", "description": "Name"}), ROLE_PERSON)
+
+    def test_location_is_location(self):
+        self.assertEqual(infer_param_role("location", {"type": "string", "description": "City name"}), ROLE_LOCATION)
+
+    def test_message_is_message(self):
+        self.assertEqual(infer_param_role("message", {"type": "string", "description": "Content"}), ROLE_MESSAGE)
+
+    def test_hour_is_hour(self):
+        self.assertEqual(infer_param_role("hour", {"type": "integer", "description": "Hour"}), ROLE_HOUR)
+
+    def test_minute_is_minute(self):
+        self.assertEqual(infer_param_role("minute", {"type": "integer", "description": "Minute"}), ROLE_MINUTE)
+
+    def test_minutes_is_duration(self):
+        self.assertEqual(infer_param_role("minutes", {"type": "integer", "description": "Minutes"}), ROLE_DURATION)
+
+    def test_title_is_title(self):
+        self.assertEqual(infer_param_role("title", {"type": "string", "description": "Title"}), ROLE_TITLE)
+
+    def test_time_is_time_str(self):
+        self.assertEqual(infer_param_role("time", {"type": "string", "description": "Time"}), ROLE_TIME_STR)
+
+    def test_song_is_song(self):
+        self.assertEqual(infer_param_role("song", {"type": "string", "description": "Song name"}), ROLE_SONG)
+
+    def test_query_is_query(self):
+        self.assertEqual(infer_param_role("query", {"type": "string", "description": "Search query"}), ROLE_QUERY)
+
+    def test_unknown_param(self):
+        self.assertEqual(infer_param_role("data", {"type": "string", "description": "Some data"}), ROLE_UNKNOWN)
+
+    def test_city_in_description(self):
+        self.assertEqual(infer_param_role("loc", {"type": "string", "description": "City to look up"}), ROLE_LOCATION)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Test: Text Extraction Engine
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestExtractForRole(unittest.TestCase):
+    """Tests for extract_for_role() — regex-based value extraction."""
+
+    def test_person_from_to(self):
+        self.assertEqual(extract_for_role(ROLE_PERSON, "Send a message to Alice saying hi"), "Alice")
+
+    def test_person_from_text(self):
+        self.assertEqual(extract_for_role(ROLE_PERSON, "Text Bob saying hello"), "Bob")
+
+    def test_person_from_find(self):
+        self.assertEqual(extract_for_role(ROLE_PERSON, "Find Tom in my contacts"), "Tom")
+
+    def test_location_weather_in(self):
+        self.assertEqual(extract_for_role(ROLE_LOCATION, "What's the weather in Paris?"), "Paris")
+
+    def test_location_multi_word(self):
+        self.assertEqual(extract_for_role(ROLE_LOCATION, "What is the weather in San Francisco?"), "San Francisco")
+
+    def test_location_weather_like_in(self):
+        self.assertEqual(extract_for_role(ROLE_LOCATION, "What's the weather like in London?"), "London")
+
+    def test_message_saying(self):
+        self.assertEqual(extract_for_role(ROLE_MESSAGE, "Send a message to Bob saying hi"), "hi")
+
+    def test_message_saying_long(self):
+        self.assertEqual(extract_for_role(ROLE_MESSAGE, "Text Dave saying I'll be late"), "I'll be late")
+
+    def test_hour_am(self):
+        self.assertEqual(extract_for_role(ROLE_HOUR, "Set an alarm for 6 AM"), 6)
+
+    def test_hour_pm_converted(self):
+        self.assertEqual(extract_for_role(ROLE_HOUR, "Set an alarm for 10 PM"), 22)
+
+    def test_hour_with_minutes(self):
+        self.assertEqual(extract_for_role(ROLE_HOUR, "Set an alarm for 7:30 AM"), 7)
+
+    def test_minute_extraction(self):
+        self.assertEqual(extract_for_role(ROLE_MINUTE, "Set an alarm for 8:15 AM"), 15)
+
+    def test_minute_whole_hour(self):
+        self.assertEqual(extract_for_role(ROLE_MINUTE, "Set an alarm for 6 AM"), 0)
+
+    def test_duration_minutes(self):
+        self.assertEqual(extract_for_role(ROLE_DURATION, "Set a timer for 5 minutes"), 5)
+
+    def test_duration_min(self):
+        self.assertEqual(extract_for_role(ROLE_DURATION, "Set a 15 min timer"), 15)
+
+    def test_title_remind_about(self):
+        self.assertEqual(extract_for_role(ROLE_TITLE, "Remind me about groceries at 5:00 PM"), "groceries")
+
+    def test_title_remind_to(self):
+        self.assertEqual(extract_for_role(ROLE_TITLE, "Remind me to take medicine at 7:00 AM"), "take medicine")
+
+    def test_time_str(self):
+        self.assertEqual(extract_for_role(ROLE_TIME_STR, "Remind me at 3:00 PM"), "3:00 PM")
+
+    def test_time_str_no_minutes(self):
+        self.assertEqual(extract_for_role(ROLE_TIME_STR, "Remind me at 5 PM"), "5:00 PM")
+
+    def test_song_play(self):
+        self.assertEqual(extract_for_role(ROLE_SONG, "Play Bohemian Rhapsody"), "Bohemian Rhapsody")
+
+    def test_song_play_some(self):
+        self.assertEqual(extract_for_role(ROLE_SONG, "Play some jazz music"), "jazz music")
+
+    def test_query_find(self):
+        self.assertEqual(extract_for_role(ROLE_QUERY, "Find Bob in my contacts"), "Bob")
+
+    def test_query_look_up(self):
+        self.assertEqual(extract_for_role(ROLE_QUERY, "Look up Sarah in my contacts"), "Sarah")
+
+    def test_unknown_returns_none(self):
+        self.assertIsNone(extract_for_role(ROLE_UNKNOWN, "Do something"))
+
+    def test_no_match_returns_none(self):
+        self.assertIsNone(extract_for_role(ROLE_PERSON, "What's the weather?"))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Test: Semantic Validation
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestSemanticValidate(unittest.TestCase):
+    """Tests for semantic_validate() — value-level consistency checks."""
+
+    def test_valid_weather(self):
+        calls = [{"name": "get_weather", "arguments": {"location": "Paris"}}]
+        ok, reason = semantic_validate(calls, [TOOL_GET_WEATHER], "What's the weather in Paris?")
+        self.assertTrue(ok)
+
+    def test_wrong_location(self):
+        calls = [{"name": "get_weather", "arguments": {"location": "Tokyo"}}]
+        ok, reason = semantic_validate(calls, [TOOL_GET_WEATHER], "What's the weather in Paris?")
+        self.assertFalse(ok)
+        self.assertIn("semantic", reason)
+
+    def test_hour_out_of_range(self):
+        calls = [{"name": "set_alarm", "arguments": {"hour": 25, "minute": 0}}]
+        ok, reason = semantic_validate(calls, [TOOL_SET_ALARM], "Set alarm for 10 AM")
+        self.assertFalse(ok)
+        self.assertIn("range", reason)
+
+    def test_minute_out_of_range(self):
+        calls = [{"name": "set_alarm", "arguments": {"hour": 10, "minute": 65}}]
+        ok, reason = semantic_validate(calls, [TOOL_SET_ALARM], "Set alarm for 10 AM")
+        self.assertFalse(ok)
+
+    def test_negative_duration(self):
+        calls = [{"name": "set_timer", "arguments": {"minutes": -5}}]
+        ok, reason = semantic_validate(calls, [TOOL_SET_TIMER], "Set a timer for 5 minutes")
+        self.assertFalse(ok)
+
+    def test_valid_message(self):
+        calls = [{"name": "send_message", "arguments": {"recipient": "Alice", "message": "hello"}}]
+        ok, _ = semantic_validate(calls, [TOOL_SEND_MESSAGE], "Send a message to Alice saying hello")
+        self.assertTrue(ok)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Test: Output Repair
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestRepairOutput(unittest.TestCase):
+    """Tests for repair_output() — fixes FunctionGemma failure modes."""
+
+    def test_ampm_hour_correction(self):
+        """10 PM should become 22."""
+        calls = [{"name": "set_alarm", "arguments": {"hour": 10, "minute": 0}}]
+        repaired = repair_output(calls, [TOOL_SET_ALARM], "Set alarm for 10 PM")
+        self.assertEqual(repaired[0]["arguments"]["hour"], 22)
+
+    def test_am_12_correction(self):
+        """12 AM should become 0."""
+        calls = [{"name": "set_alarm", "arguments": {"hour": 12, "minute": 0}}]
+        repaired = repair_output(calls, [TOOL_SET_ALARM], "Set alarm for 12 AM")
+        self.assertEqual(repaired[0]["arguments"]["hour"], 0)
+
+    def test_negative_duration_fixed(self):
+        """Negative minutes → absolute value."""
+        calls = [{"name": "set_timer", "arguments": {"minutes": -5}}]
+        repaired = repair_output(calls, [TOOL_SET_TIMER], "Set a timer for 5 minutes")
+        self.assertEqual(repaired[0]["arguments"]["minutes"], 5)
+
+    def test_wrong_location_replaced(self):
+        """Location not in user text → replaced by extraction."""
+        calls = [{"name": "get_weather", "arguments": {"location": "Tokyo"}}]
+        repaired = repair_output(calls, [TOOL_GET_WEATHER], "What's the weather in Paris?")
+        self.assertEqual(repaired[0]["arguments"]["location"], "Paris")
+
+    def test_missing_param_filled(self):
+        """Missing required param filled from text extraction."""
+        calls = [{"name": "set_alarm", "arguments": {"hour": 10}}]
+        repaired = repair_output(calls, [TOOL_SET_ALARM], "Set alarm for 10 AM")
+        self.assertIn("minute", repaired[0]["arguments"])
+        self.assertEqual(repaired[0]["arguments"]["minute"], 0)
+
+    def test_unknown_tool_removed(self):
+        """Unknown tool names are dropped."""
+        calls = [{"name": "fake_tool", "arguments": {"x": 1}}]
+        repaired = repair_output(calls, [TOOL_GET_WEATHER], "Weather please")
+        self.assertEqual(len(repaired), 0)
+
+    def test_valid_output_unchanged(self):
+        """Valid output should not be modified."""
+        calls = [{"name": "get_weather", "arguments": {"location": "Paris"}}]
+        repaired = repair_output(calls, [TOOL_GET_WEATHER], "What's the weather in Paris?")
+        self.assertEqual(repaired[0]["arguments"]["location"], "Paris")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Test: Deterministic Extraction
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestBuildCallsFromText(unittest.TestCase):
+    """Tests for build_calls_from_text() — schema-driven extraction fallback."""
+
+    def test_extract_weather(self):
+        calls = build_calls_from_text("What's the weather in Paris?", [TOOL_GET_WEATHER])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["name"], "get_weather")
+        self.assertEqual(calls[0]["arguments"]["location"], "Paris")
+
+    def test_extract_alarm(self):
+        calls = build_calls_from_text("Set an alarm for 7:30 AM", [TOOL_SET_ALARM])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["arguments"]["hour"], 7)
+        self.assertEqual(calls[0]["arguments"]["minute"], 30)
+
+    def test_extract_message(self):
+        calls = build_calls_from_text(
+            "Send a message to Alice saying hello", [TOOL_SEND_MESSAGE],
+        )
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["arguments"]["recipient"], "Alice")
+        self.assertEqual(calls[0]["arguments"]["message"], "hello")
+
+    def test_extract_timer(self):
+        calls = build_calls_from_text("Set a timer for 5 minutes", [TOOL_SET_TIMER])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["arguments"]["minutes"], 5)
+
+    def test_extract_music(self):
+        calls = build_calls_from_text("Play Bohemian Rhapsody", [TOOL_PLAY_MUSIC])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["arguments"]["song"], "Bohemian Rhapsody")
+
+    def test_extract_contacts(self):
+        calls = build_calls_from_text("Find Bob in my contacts", [TOOL_SEARCH_CONTACTS])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["arguments"]["query"], "Bob")
+
+    def test_no_match_returns_empty(self):
+        calls = build_calls_from_text("Do something random", [TOOL_CUSTOM])
+        self.assertEqual(len(calls), 0)
+
+    def test_multi_tool_extraction(self):
+        calls = build_calls_from_text(
+            "Send a message to Bob saying hi and get the weather in London",
+            [TOOL_GET_WEATHER, TOOL_SEND_MESSAGE, TOOL_SET_ALARM],
+        )
+        self.assertGreaterEqual(len(calls), 2)
+        names = {c["name"] for c in calls}
+        self.assertIn("send_message", names)
+        self.assertIn("get_weather", names)
+
+    def test_segmented_extraction(self):
+        calls = build_calls_from_segments(
+            "Text Alice saying hi and check the weather in Paris",
+            [TOOL_GET_WEATHER, TOOL_SEND_MESSAGE, TOOL_SET_ALARM],
+        )
+        self.assertGreaterEqual(len(calls), 2)
+        names = {c["name"] for c in calls}
+        self.assertIn("send_message", names)
+        self.assertIn("get_weather", names)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Test: Routing Decision Matrix (Mock-Driven)
 #
 # These tests mock generate_cactus and generate_cloud to test the routing
-# logic in isolation. Each test verifies a specific signal triggers correctly.
+# logic in isolation. The 7-layer flow: local → repair → validate → retry →
+# extract → cloud. Tests use TOOL_CUSTOM (extraction-proof) for cloud tests.
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TestRoutingDecisions(unittest.TestCase):
@@ -464,6 +772,8 @@ class TestRoutingDecisions(unittest.TestCase):
             "total_time_ms": time_ms,
         }
 
+    # ── ON-DEVICE: High confidence + valid output ──
+
     @patch("main.generate_cloud")
     @patch("main.generate_cactus")
     def test_high_confidence_easy_stays_on_device(self, mock_cactus, mock_cloud):
@@ -491,32 +801,6 @@ class TestRoutingDecisions(unittest.TestCase):
 
     @patch("main.generate_cloud")
     @patch("main.generate_cactus")
-    def test_very_low_confidence_easy_falls_to_cloud(self, mock_cactus, mock_cloud):
-        """Easy query, confidence=0.10 → below 0.25 threshold → cloud."""
-        mock_cactus.return_value = self._mock_local(confidence=0.10)
-        mock_cloud.return_value = self._mock_cloud()
-
-        msg = [{"role": "user", "content": "What's the weather in SF?"}]
-        result = generate_hybrid(msg, [TOOL_GET_WEATHER])
-
-        self.assertIn("cloud", result["source"])
-        mock_cloud.assert_called_once()
-
-    @patch("main.generate_cloud")
-    @patch("main.generate_cactus")
-    def test_medium_needs_higher_confidence(self, mock_cactus, mock_cloud):
-        """Medium query, confidence=0.30 → below 0.45 threshold → cloud."""
-        mock_cactus.return_value = self._mock_local(confidence=0.30)
-        mock_cloud.return_value = self._mock_cloud()
-
-        msg = [{"role": "user", "content": "Set an alarm for 9 AM."}]
-        tools = [TOOL_SET_ALARM, TOOL_GET_WEATHER, TOOL_SEND_MESSAGE]
-        result = generate_hybrid(msg, tools)
-
-        self.assertIn("cloud", result["source"])
-
-    @patch("main.generate_cloud")
-    @patch("main.generate_cactus")
     def test_medium_high_confidence_on_device(self, mock_cactus, mock_cloud):
         """Medium query, confidence=0.50 → above 0.45 → on-device."""
         mock_cactus.return_value = self._mock_local(
@@ -530,106 +814,6 @@ class TestRoutingDecisions(unittest.TestCase):
 
         self.assertIn("on-device", result["source"])
         mock_cloud.assert_not_called()
-
-    @patch("main.generate_cloud")
-    @patch("main.generate_cactus")
-    def test_cloud_handoff_signal(self, mock_cactus, mock_cloud):
-        """cloud_handoff=True → always route to cloud regardless of confidence."""
-        mock_cactus.return_value = self._mock_local(
-            confidence=0.95, cloud_handoff=True
-        )
-        mock_cloud.return_value = self._mock_cloud()
-
-        msg = [{"role": "user", "content": "What's the weather in SF?"}]
-        result = generate_hybrid(msg, [TOOL_GET_WEATHER])
-
-        self.assertIn("cloud", result["source"])
-        self.assertIn("handoff", result["source"])
-
-    @patch("main.generate_cloud")
-    @patch("main.generate_cactus")
-    def test_spike_handoff_signal(self, mock_cactus, mock_cloud):
-        """spike_handoff=True → route to cloud."""
-        mock_cactus.return_value = self._mock_local(
-            confidence=0.80, spike_handoff=True
-        )
-        mock_cloud.return_value = self._mock_cloud()
-
-        msg = [{"role": "user", "content": "What's the weather in SF?"}]
-        result = generate_hybrid(msg, [TOOL_GET_WEATHER])
-
-        self.assertIn("cloud", result["source"])
-        self.assertIn("spike", result["source"])
-
-    @patch("main.generate_cloud")
-    @patch("main.generate_cactus")
-    def test_empty_output_triggers_cloud(self, mock_cactus, mock_cloud):
-        """Empty function_calls → validation fails → cloud fallback."""
-        mock_cactus.return_value = self._mock_local(confidence=0.90, calls=[])
-        mock_cloud.return_value = self._mock_cloud()
-
-        msg = [{"role": "user", "content": "What's the weather in SF?"}]
-        result = generate_hybrid(msg, [TOOL_GET_WEATHER])
-
-        self.assertIn("cloud", result["source"])
-
-    @patch("main.generate_cloud")
-    @patch("main.generate_cactus")
-    def test_unknown_tool_triggers_cloud(self, mock_cactus, mock_cloud):
-        """Invalid tool name in output → validation fails → cloud."""
-        mock_cactus.return_value = self._mock_local(
-            confidence=0.90,
-            calls=[{"name": "nonexistent_tool", "arguments": {}}],
-        )
-        mock_cloud.return_value = self._mock_cloud()
-
-        msg = [{"role": "user", "content": "What's the weather in SF?"}]
-        result = generate_hybrid(msg, [TOOL_GET_WEATHER])
-
-        self.assertIn("cloud", result["source"])
-        self.assertIn("unknown-tool", result["source"])
-
-    @patch("main.generate_cloud")
-    @patch("main.generate_cactus")
-    def test_missing_params_triggers_cloud(self, mock_cactus, mock_cloud):
-        """Missing required params → validation fails → cloud."""
-        mock_cactus.return_value = self._mock_local(
-            confidence=0.90,
-            calls=[{"name": "set_alarm", "arguments": {"hour": 10}}],  # missing minute
-        )
-        mock_cloud.return_value = self._mock_cloud(
-            calls=[{"name": "set_alarm", "arguments": {"hour": 10, "minute": 0}}]
-        )
-
-        msg = [{"role": "user", "content": "Set alarm for 10 AM."}]
-        tools = [TOOL_SET_ALARM, TOOL_GET_WEATHER]
-        result = generate_hybrid(msg, tools)
-
-        self.assertIn("cloud", result["source"])
-        self.assertIn("missing-params", result["source"])
-
-    @patch("main.generate_cloud")
-    @patch("main.generate_cactus")
-    def test_intent_gap_triggers_cloud(self, mock_cactus, mock_cloud):
-        """Hard query expects 2 calls but only 1 produced → cloud fallback."""
-        mock_cactus.return_value = self._mock_local(
-            confidence=0.70,
-            calls=[{"name": "get_weather", "arguments": {"location": "London"}}],
-            # Missing the send_message call
-        )
-        mock_cloud.return_value = self._mock_cloud(
-            calls=[
-                {"name": "send_message", "arguments": {"recipient": "Bob", "message": "hi"}},
-                {"name": "get_weather", "arguments": {"location": "London"}},
-            ]
-        )
-
-        msg = [{"role": "user", "content": "Send Bob a message saying hi and check the weather in London."}]
-        tools = [TOOL_GET_WEATHER, TOOL_SEND_MESSAGE, TOOL_SET_ALARM]
-        result = generate_hybrid(msg, tools)
-
-        self.assertIn("cloud", result["source"])
-        self.assertIn("intent-gap", result["source"])
 
     @patch("main.generate_cloud")
     @patch("main.generate_cactus")
@@ -650,30 +834,234 @@ class TestRoutingDecisions(unittest.TestCase):
         self.assertIn("on-device", result["source"])
         mock_cloud.assert_not_called()
 
+    # ── ON-DEVICE via RETRY: valid output but below confidence threshold ──
+
+    @patch("main.generate_cloud")
+    @patch("main.generate_cactus")
+    def test_low_confidence_saved_by_retry(self, mock_cactus, mock_cloud):
+        """Below threshold but valid output → retry accepts it as on-device."""
+        mock_cactus.return_value = self._mock_local(confidence=0.10)
+
+        msg = [{"role": "user", "content": "What's the weather in SF?"}]
+        result = generate_hybrid(msg, [TOOL_GET_WEATHER])
+
+        # Retry finds valid + semantic-valid output → on-device
+        self.assertIn("on-device", result["source"])
+        mock_cloud.assert_not_called()
+
+    # ── ON-DEVICE via REPAIR: FunctionGemma failure modes fixed ──
+
+    @patch("main.generate_cloud")
+    @patch("main.generate_cactus")
+    def test_missing_minute_repaired(self, mock_cactus, mock_cloud):
+        """Missing 'minute' param → repair fills from text extraction → on-device."""
+        mock_cactus.return_value = self._mock_local(
+            confidence=0.90,
+            calls=[{"name": "set_alarm", "arguments": {"hour": 10}}],
+        )
+
+        msg = [{"role": "user", "content": "Set alarm for 10 AM."}]
+        tools = [TOOL_SET_ALARM, TOOL_GET_WEATHER]
+        result = generate_hybrid(msg, tools)
+
+        self.assertIn("on-device", result["source"])
+        alarm = result["function_calls"][0]
+        self.assertEqual(alarm["arguments"].get("minute"), 0)
+
+    @patch("main.generate_cloud")
+    @patch("main.generate_cactus")
+    def test_ampm_corrected_on_device(self, mock_cactus, mock_cloud):
+        """hour=10 for '10 PM' → repair corrects to 22 → on-device."""
+        mock_cactus.return_value = self._mock_local(
+            confidence=0.90,
+            calls=[{"name": "set_alarm", "arguments": {"hour": 10, "minute": 0}}],
+        )
+
+        msg = [{"role": "user", "content": "Set alarm for 10 PM."}]
+        tools = [TOOL_SET_ALARM, TOOL_GET_WEATHER]
+        result = generate_hybrid(msg, tools)
+
+        self.assertIn("on-device", result["source"])
+        self.assertEqual(result["function_calls"][0]["arguments"]["hour"], 22)
+
+    # ── ON-DEVICE via EXTRACTION: handoff/spike saved by deterministic extraction ──
+
+    @patch("main.generate_cloud")
+    @patch("main.generate_cactus")
+    def test_handoff_saved_by_extraction(self, mock_cactus, mock_cloud):
+        """Handoff + extractable query → extraction saves it as on-device."""
+        mock_cactus.return_value = self._mock_local(
+            confidence=0.95, cloud_handoff=True,
+        )
+
+        msg = [{"role": "user", "content": "What's the weather in Paris?"}]
+        result = generate_hybrid(msg, [TOOL_GET_WEATHER])
+
+        self.assertIn("on-device", result["source"])
+        self.assertIn("extracted", result["source"])
+        mock_cloud.assert_not_called()
+
+    @patch("main.generate_cloud")
+    @patch("main.generate_cactus")
+    def test_spike_saved_by_extraction(self, mock_cactus, mock_cloud):
+        """Spike handoff + extractable query → extraction saves it."""
+        mock_cactus.return_value = self._mock_local(
+            confidence=0.80, spike_handoff=True,
+        )
+
+        msg = [{"role": "user", "content": "Set a timer for 5 minutes."}]
+        result = generate_hybrid(msg, [TOOL_SET_TIMER])
+
+        self.assertIn("on-device", result["source"])
+        self.assertIn("extracted", result["source"])
+        mock_cloud.assert_not_called()
+
+    # ── ON-DEVICE via AUGMENTATION: missing call filled by extraction ──
+
+    @patch("main.generate_cloud")
+    @patch("main.generate_cactus")
+    def test_intent_gap_filled_by_augmentation(self, mock_cactus, mock_cloud):
+        """Hard query with 1/2 calls → augmentation adds the missing one → on-device."""
+        mock_cactus.return_value = self._mock_local(
+            confidence=0.70,
+            calls=[{"name": "get_weather", "arguments": {"location": "London"}}],
+        )
+
+        msg = [{"role": "user", "content": "Send Bob a message saying hi and check the weather in London."}]
+        tools = [TOOL_GET_WEATHER, TOOL_SEND_MESSAGE, TOOL_SET_ALARM]
+        result = generate_hybrid(msg, tools)
+
+        self.assertIn("on-device", result["source"])
+        names = {c["name"] for c in result["function_calls"]}
+        self.assertIn("send_message", names)
+        self.assertIn("get_weather", names)
+
+    # ── CLOUD: non-extractable queries that must fall through to cloud ──
+
+    @patch("main.generate_cloud")
+    @patch("main.generate_cactus")
+    def test_handoff_non_extractable_goes_to_cloud(self, mock_cactus, mock_cloud):
+        """Handoff + TOOL_CUSTOM (no extraction possible) → cloud."""
+        mock_cactus.return_value = self._mock_local(
+            confidence=0.95, cloud_handoff=True,
+            calls=[{"name": "custom_action", "arguments": {"data": "xyz"}}],
+        )
+        mock_cloud.return_value = self._mock_cloud(
+            calls=[{"name": "custom_action", "arguments": {"data": "result"}}],
+        )
+
+        msg = [{"role": "user", "content": "Process this input."}]
+        result = generate_hybrid(msg, [TOOL_CUSTOM])
+
+        self.assertIn("cloud", result["source"])
+        self.assertIn("handoff", result["source"])
+
+    @patch("main.generate_cloud")
+    @patch("main.generate_cactus")
+    def test_spike_non_extractable_goes_to_cloud(self, mock_cactus, mock_cloud):
+        """Spike + TOOL_CUSTOM → cloud."""
+        mock_cactus.return_value = self._mock_local(
+            confidence=0.80, spike_handoff=True,
+            calls=[{"name": "custom_action", "arguments": {"data": "xyz"}}],
+        )
+        mock_cloud.return_value = self._mock_cloud(
+            calls=[{"name": "custom_action", "arguments": {"data": "result"}}],
+        )
+
+        msg = [{"role": "user", "content": "Process this input."}]
+        result = generate_hybrid(msg, [TOOL_CUSTOM])
+
+        self.assertIn("cloud", result["source"])
+        self.assertIn("spike", result["source"])
+
+    @patch("main.generate_cloud")
+    @patch("main.generate_cactus")
+    def test_low_confidence_non_extractable_to_cloud(self, mock_cactus, mock_cloud):
+        """Low confidence + non-extractable tool → retry fails → cloud."""
+        mock_cactus.return_value = self._mock_local(
+            confidence=0.05,
+            calls=[{"name": "custom_action", "arguments": {"data": "xyz"}}],
+        )
+        mock_cloud.return_value = self._mock_cloud(
+            calls=[{"name": "custom_action", "arguments": {"data": "result"}}],
+        )
+
+        msg = [{"role": "user", "content": "Process this input."}]
+        result = generate_hybrid(msg, [TOOL_CUSTOM])
+
+        self.assertIn("cloud", result["source"])
+
+    @patch("main.generate_cloud")
+    @patch("main.generate_cactus")
+    def test_empty_output_non_extractable_to_cloud(self, mock_cactus, mock_cloud):
+        """Empty function_calls + TOOL_CUSTOM → no extraction → cloud."""
+        mock_cactus.return_value = self._mock_local(
+            confidence=0.90,
+            calls=[],
+        )
+        mock_cloud.return_value = self._mock_cloud(
+            calls=[{"name": "custom_action", "arguments": {"data": "result"}}],
+        )
+
+        msg = [{"role": "user", "content": "Process this input."}]
+        result = generate_hybrid(msg, [TOOL_CUSTOM])
+
+        self.assertIn("cloud", result["source"])
+
+    @patch("main.generate_cloud")
+    @patch("main.generate_cactus")
+    def test_parse_failure_non_extractable_to_cloud(self, mock_cactus, mock_cloud):
+        """success=False + non-extractable → cloud (handoff)."""
+        mock_cactus.return_value = self._mock_local(
+            confidence=0, success=False, calls=[],
+        )
+        mock_cloud.return_value = self._mock_cloud(
+            calls=[{"name": "custom_action", "arguments": {"data": "result"}}],
+        )
+
+        msg = [{"role": "user", "content": "Process this input."}]
+        result = generate_hybrid(msg, [TOOL_CUSTOM])
+
+        self.assertIn("cloud", result["source"])
+        self.assertIn("handoff", result["source"])
+
+    # ── ERROR HANDLING ──
+
     @patch("main.generate_cloud")
     @patch("main.generate_cactus")
     def test_cloud_failure_returns_local(self, mock_cactus, mock_cloud):
         """If cloud API fails, return local result (partial credit > zero)."""
-        mock_cactus.return_value = self._mock_local(confidence=0.10)
+        mock_cactus.return_value = self._mock_local(
+            confidence=0.05,
+            calls=[{"name": "custom_action", "arguments": {"data": "xyz"}}],
+        )
         mock_cloud.side_effect = Exception("API Error")
 
-        msg = [{"role": "user", "content": "What's the weather?"}]
-        result = generate_hybrid(msg, [TOOL_GET_WEATHER])
+        msg = [{"role": "user", "content": "Process this input."}]
+        result = generate_hybrid(msg, [TOOL_CUSTOM])
 
-        # Should gracefully fall back to local
         self.assertIn("on-device", result["source"])
 
     @patch("main.generate_cloud")
     @patch("main.generate_cactus")
-    def test_time_accumulation_on_fallback(self, mock_cactus, mock_cloud):
+    def test_time_accumulation_on_cloud_fallback(self, mock_cactus, mock_cloud):
         """Cloud fallback should include local time in total."""
-        mock_cactus.return_value = self._mock_local(confidence=0.10, time_ms=50)
-        mock_cloud.return_value = self._mock_cloud(time_ms=200)
+        mock_cactus.return_value = self._mock_local(
+            confidence=0.05, time_ms=50,
+            calls=[{"name": "custom_action", "arguments": {"data": "xyz"}}],
+        )
+        mock_cloud.return_value = {
+            "function_calls": [{"name": "custom_action", "arguments": {"data": "result"}}],
+            "total_time_ms": 200,
+        }
 
-        msg = [{"role": "user", "content": "What's the weather?"}]
-        result = generate_hybrid(msg, [TOOL_GET_WEATHER])
+        msg = [{"role": "user", "content": "Process this input."}]
+        result = generate_hybrid(msg, [TOOL_CUSTOM])
 
-        self.assertEqual(result["total_time_ms"], 250)  # 50 + 200
+        # Local time (50) + cloud time (200). Retry also adds time.
+        self.assertGreaterEqual(result["total_time_ms"], 250)
+
+    # ── STRUCTURAL ──
 
     @patch("main.generate_cloud")
     @patch("main.generate_cactus")
@@ -681,12 +1069,24 @@ class TestRoutingDecisions(unittest.TestCase):
         """Result must have function_calls, total_time_ms, source for benchmark compat."""
         mock_cactus.return_value = self._mock_local(confidence=0.90)
 
-        msg = [{"role": "user", "content": "What's the weather?"}]
+        msg = [{"role": "user", "content": "What's the weather in SF?"}]
         result = generate_hybrid(msg, [TOOL_GET_WEATHER])
 
         self.assertIn("function_calls", result)
         self.assertIn("total_time_ms", result)
         self.assertIn("source", result)
+
+    @patch("main.generate_cloud")
+    @patch("main.generate_cactus")
+    def test_difficulty_in_result(self, mock_cactus, mock_cloud):
+        """Result should include difficulty classification."""
+        mock_cactus.return_value = self._mock_local(confidence=0.90)
+
+        msg = [{"role": "user", "content": "What's the weather in SF?"}]
+        result = generate_hybrid(msg, [TOOL_GET_WEATHER])
+
+        self.assertIn("difficulty", result)
+        self.assertIn(result["difficulty"], ("easy", "medium", "hard"))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -722,7 +1122,7 @@ class TestThresholdBoundaries(unittest.TestCase):
         mock_cactus.return_value = {
             "function_calls": [{"name": "get_weather", "arguments": {"location": "SF"}}],
             "total_time_ms": 50,
-            "confidence": threshold,  # Exactly at boundary
+            "confidence": threshold,
             "cloud_handoff": False,
             "spike_handoff": False,
             "success": True,
@@ -735,11 +1135,11 @@ class TestThresholdBoundaries(unittest.TestCase):
 
     @patch("main.generate_cloud")
     @patch("main.generate_cactus")
-    def test_just_below_easy_boundary(self, mock_cactus, mock_cloud):
-        """Confidence just below easy threshold → cloud."""
+    def test_below_threshold_with_custom_tool_goes_cloud(self, mock_cactus, mock_cloud):
+        """Below threshold + non-extractable tool → cloud (retry also fails)."""
         threshold = THRESHOLDS["easy"]
         mock_cactus.return_value = {
-            "function_calls": [{"name": "get_weather", "arguments": {"location": "SF"}}],
+            "function_calls": [{"name": "custom_action", "arguments": {"data": "xyz"}}],
             "total_time_ms": 50,
             "confidence": threshold - 0.01,
             "cloud_handoff": False,
@@ -747,12 +1147,12 @@ class TestThresholdBoundaries(unittest.TestCase):
             "success": True,
         }
         mock_cloud.return_value = {
-            "function_calls": [{"name": "get_weather", "arguments": {"location": "SF"}}],
+            "function_calls": [{"name": "custom_action", "arguments": {"data": "result"}}],
             "total_time_ms": 200,
         }
 
-        msg = [{"role": "user", "content": "Weather in SF?"}]
-        result = generate_hybrid(msg, [TOOL_GET_WEATHER])
+        msg = [{"role": "user", "content": "Process this input."}]
+        result = generate_hybrid(msg, [TOOL_CUSTOM])
 
         self.assertIn("cloud", result["source"])
 
@@ -767,29 +1167,29 @@ class TestSignalPriority(unittest.TestCase):
     @patch("main.generate_cloud")
     @patch("main.generate_cactus")
     def test_handoff_checked_before_confidence(self, mock_cactus, mock_cloud):
-        """cloud_handoff should trigger before confidence check, even with high conf."""
+        """cloud_handoff triggers before confidence, with non-extractable query → cloud."""
         mock_cactus.return_value = {
-            "function_calls": [{"name": "get_weather", "arguments": {"location": "SF"}}],
+            "function_calls": [{"name": "custom_action", "arguments": {"data": "xyz"}}],
             "total_time_ms": 50,
             "confidence": 0.99,
-            "cloud_handoff": True,  # This should win
+            "cloud_handoff": True,
             "spike_handoff": False,
             "success": True,
         }
         mock_cloud.return_value = {
-            "function_calls": [{"name": "get_weather", "arguments": {"location": "SF"}}],
+            "function_calls": [{"name": "custom_action", "arguments": {"data": "result"}}],
             "total_time_ms": 200,
         }
 
-        msg = [{"role": "user", "content": "Weather?"}]
-        result = generate_hybrid(msg, [TOOL_GET_WEATHER])
+        msg = [{"role": "user", "content": "Process this input."}]
+        result = generate_hybrid(msg, [TOOL_CUSTOM])
 
         self.assertIn("handoff", result["source"])
 
     @patch("main.generate_cloud")
     @patch("main.generate_cactus")
     def test_success_false_triggers_handoff(self, mock_cactus, mock_cloud):
-        """success=False (JSON parse error) → handoff signal."""
+        """success=False (JSON parse error) → handoff signal, non-extractable → cloud."""
         mock_cactus.return_value = {
             "function_calls": [],
             "total_time_ms": 50,
@@ -799,14 +1199,34 @@ class TestSignalPriority(unittest.TestCase):
             "success": False,
         }
         mock_cloud.return_value = {
-            "function_calls": [{"name": "get_weather", "arguments": {"location": "SF"}}],
+            "function_calls": [{"name": "custom_action", "arguments": {"data": "result"}}],
             "total_time_ms": 200,
         }
 
-        msg = [{"role": "user", "content": "Weather?"}]
-        result = generate_hybrid(msg, [TOOL_GET_WEATHER])
+        msg = [{"role": "user", "content": "Process this input."}]
+        result = generate_hybrid(msg, [TOOL_CUSTOM])
 
         self.assertIn("handoff", result["source"])
+
+    @patch("main.generate_cloud")
+    @patch("main.generate_cactus")
+    def test_handoff_with_extractable_stays_on_device(self, mock_cactus, mock_cloud):
+        """cloud_handoff + extractable query → extraction saves it → on-device."""
+        mock_cactus.return_value = {
+            "function_calls": [{"name": "get_weather", "arguments": {"location": "SF"}}],
+            "total_time_ms": 50,
+            "confidence": 0.99,
+            "cloud_handoff": True,
+            "spike_handoff": False,
+            "success": True,
+        }
+
+        msg = [{"role": "user", "content": "Weather in Paris?"}]
+        result = generate_hybrid(msg, [TOOL_GET_WEATHER])
+
+        self.assertIn("on-device", result["source"])
+        self.assertIn("extracted", result["source"])
+        mock_cloud.assert_not_called()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
