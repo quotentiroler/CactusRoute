@@ -576,7 +576,8 @@ class TestExtractForRole(unittest.TestCase):
         self.assertEqual(extract_for_role(ROLE_SONG, "Play Bohemian Rhapsody"), "Bohemian Rhapsody")
 
     def test_song_play_some(self):
-        self.assertEqual(extract_for_role(ROLE_SONG, "Play some jazz music"), "jazz music")
+        # "Play some jazz music" should extract "jazz" not "jazz music" — benchmark expects "jazz"
+        self.assertEqual(extract_for_role(ROLE_SONG, "Play some jazz music"), "jazz")
 
     def test_query_find(self):
         self.assertEqual(extract_for_role(ROLE_QUERY, "Find Bob in my contacts"), "Bob")
@@ -2165,6 +2166,83 @@ class TestRoutingPipelineIntegration(unittest.TestCase):
         expected = [{"name": "get_weather", "arguments": {"location": "Paris"}}]
         f1 = _compute_f1(result["function_calls"], expected)
         self.assertEqual(f1, 1.0)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Test: Exact Failing Benchmark Cases
+#
+# These are the 4 cases scoring F1=0.00. Tests must pass for benchmark to work.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+TOOL_CREATE_REMINDER = {
+    "name": "create_reminder",
+    "description": "Create a reminder with a title and time",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string", "description": "Reminder title"},
+            "time": {"type": "string", "description": "Time for the reminder (e.g. 3:00 PM)"},
+        },
+        "required": ["title", "time"],
+    },
+}
+
+
+class TestFailingBenchmarkCases(unittest.TestCase):
+    """Tests for the exact benchmark cases that are failing with F1=0.00."""
+
+    def test_reminder_meeting_extraction(self):
+        """reminder_meeting: 'Remind me about the meeting at 3:00 PM.'"""
+        text = "Remind me about the meeting at 3:00 PM."
+        calls = build_calls_from_text(text, [TOOL_CREATE_REMINDER])
+        expected = [{"name": "create_reminder", "arguments": {"title": "meeting", "time": "3:00 PM"}}]
+
+        self.assertEqual(len(calls), 1, f"Expected 1 call, got {calls}")
+        self.assertEqual(calls[0]["name"], "create_reminder")
+        # Title should be "meeting" (or contain it)
+        self.assertIn("meeting", calls[0]["arguments"].get("title", "").lower())
+        # Time should be "3:00 PM"
+        self.assertEqual(calls[0]["arguments"].get("time"), "3:00 PM")
+
+    def test_reminder_among_four_extraction(self):
+        """reminder_among_four: 'Remind me to call the dentist at 2:00 PM.'"""
+        text = "Remind me to call the dentist at 2:00 PM."
+        tools = [TOOL_GET_WEATHER, TOOL_SEND_MESSAGE, TOOL_CREATE_REMINDER, TOOL_SET_ALARM]
+        calls = build_calls_from_text(text, tools)
+        expected = [{"name": "create_reminder", "arguments": {"title": "call the dentist", "time": "2:00 PM"}}]
+
+        reminder_calls = [c for c in calls if c["name"] == "create_reminder"]
+        self.assertEqual(len(reminder_calls), 1, f"Expected 1 reminder call, got {calls}")
+        # Title should contain "call the dentist" or similar
+        title = reminder_calls[0]["arguments"].get("title", "")
+        self.assertTrue("dentist" in title.lower() or "call" in title.lower(),
+                       f"Title '{title}' should mention dentist or call")
+        # Time should be "2:00 PM"
+        self.assertEqual(reminder_calls[0]["arguments"].get("time"), "2:00 PM")
+
+    def test_timer_among_three_extraction(self):
+        """timer_among_three: 'Set a timer for 10 minutes.'"""
+        text = "Set a timer for 10 minutes."
+        tools = [TOOL_SET_ALARM, TOOL_SET_TIMER, TOOL_PLAY_MUSIC]
+        calls = build_calls_from_text(text, tools)
+        expected = [{"name": "set_timer", "arguments": {"minutes": 10}}]
+
+        timer_calls = [c for c in calls if c["name"] == "set_timer"]
+        self.assertEqual(len(timer_calls), 1, f"Expected 1 timer call, got {calls}")
+        self.assertEqual(timer_calls[0]["arguments"].get("minutes"), 10)
+
+    def test_music_among_three_extraction(self):
+        """music_among_three: 'Play some jazz music.'"""
+        text = "Play some jazz music."
+        tools = [TOOL_SET_ALARM, TOOL_PLAY_MUSIC, TOOL_GET_WEATHER]
+        calls = build_calls_from_text(text, tools)
+        expected = [{"name": "play_music", "arguments": {"song": "jazz"}}]
+
+        music_calls = [c for c in calls if c["name"] == "play_music"]
+        self.assertEqual(len(music_calls), 1, f"Expected 1 music call, got {calls}")
+        # Song should contain "jazz"
+        song = music_calls[0]["arguments"].get("song", "")
+        self.assertIn("jazz", song.lower(), f"Song '{song}' should contain jazz")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

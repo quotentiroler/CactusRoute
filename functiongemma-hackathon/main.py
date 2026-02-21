@@ -366,7 +366,11 @@ def extract_for_role(role, user_text):
     if role == ROLE_TITLE:
         m = _REMIND_TITLE_RE.search(user_text)
         if m:
-            return m.group(1).strip().rstrip('.,!?')
+            title = m.group(1).strip().rstrip('.,!?')
+            # Strip leading "the" since users say "remind me about the X" but mean just "X"
+            if title.lower().startswith('the '):
+                title = title[4:].strip()
+            return title
         return None
 
     if role == ROLE_TIME_STR:
@@ -381,7 +385,11 @@ def extract_for_role(role, user_text):
     if role == ROLE_SONG:
         m = _PLAY_RE.search(user_text)
         if m:
-            return m.group(1).strip().rstrip('.,!?')
+            song = m.group(1).strip().rstrip('.,!?')
+            # Strip trailing "music" since users say "play X music" but mean just "X"
+            if song.lower().endswith(' music'):
+                song = song[:-6].strip()
+            return song
         return None
 
     if role == ROLE_QUERY:
