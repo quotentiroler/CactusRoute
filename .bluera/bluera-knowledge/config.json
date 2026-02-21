@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "dataDir": ".bluera/bluera-knowledge/data",
+  "embedding": {
+    "model": "Xenova/bge-small-en-v1.5",
+    "batchSize": 32,
+    "dtype": "fp32",
+    "pooling": "mean",
+    "normalize": true,
+    "queryPrefix": "Represent this sentence for searching relevant passages: ",
+    "docPrefix": "",
+    "maxInFlightBatches": 1
+  },
+  "indexing": {
+    "concurrency": 4,
+    "chunkSize": 1000,
+    "chunkOverlap": 150,
+    "ignorePatterns": [
+      "node_modules/**",
+      ".git/**",
+      "*.min.js",
+      "*.map"
+    ],
+    "prependPath": false,
+    "maxFileSizeBytes": 1048576
+  },
+  "search": {
+    "defaultMode": "hybrid",
+    "defaultLimit": 10
+  },
+  "crawl": {
+    "userAgent": "BlueraKnowledge/1.0",
+    "timeout": 30000,
+    "maxConcurrency": 3
+  },
+  "server": {
+    "port": 3847,
+    "host": "127.0.0.1"
+  },
+  "reranker": {
+    "enabled": false,
+    "model": "Xenova/ms-marco-MiniLM-L-6-v2",
+    "topK": 20,
+    "returnK": 10
+  }
+}

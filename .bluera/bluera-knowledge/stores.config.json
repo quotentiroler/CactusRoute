@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "stores": [
+    {
+      "name": "cactus-sdk",
+      "type": "file",
+      "path": "./cactus",
+      "pathType": "relative"
+    },
+    {
+      "name": "hackathon",
+      "type": "file",
+      "path": "./functiongemma-hackathon",
+      "pathType": "relative"
+    }
+  ]
+}

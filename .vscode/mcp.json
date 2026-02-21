@@ -1,0 +1,28 @@
+{
+  "servers": {
+    "arxiv": {
+      "command": "uv",
+      "args": [
+        "tool",
+        "run",
+        "arxiv-mcp-server",
+        "--storage-path",
+        "${workspaceFolder}/papers"
+      ]
+    },
+    "deep-research": {
+      "command": "node",
+      "args": [
+        "${workspaceFolder}/deep-research-mcp-server/dist/mcp-server.js"
+      ]
+    },
+    "bluera-knowledge": {
+      "command": "bluera-knowledge",
+      "args": [
+        "mcp",
+        "--data-dir",
+        "${workspaceFolder}/.bluera/bluera-knowledge/data"
+      ]
+    }
+  }
+}

@@ -1,0 +1,65 @@
+# ── OS ──────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*~
+
+# ── IDEs / Editors ─────────────────────────────────
+.idea/
+*.iml
+.project
+.classpath
+.settings/
+
+# ── Environment / Secrets ──────────────────────────
+.env
+.env.local
+.env.*.local
+.envrc
+
+# ── Python ─────────────────────────────────────────
+__pycache__/
+*.py[codz]
+*$py.class
+*.egg-info/
+*.egg
+dist/
+build/
+*.whl
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ── Node.js ────────────────────────────────────────
+node_modules/
+*.tsbuildinfo
+
+# ── Model weights / large binaries ─────────────────
+*.gguf
+*.bin
+*.onnx
+*.safetensors
+*.pt
+*.pth
+
+# ── Research outputs (regenerable) ─────────────────
+output.md
+
+# ── External repos (cloned separately) ─────────────
+cactus/
+deep-research-mcp-server/
+
+# ── Bluera Knowledge ──────────────────────────────
+# Config files (stores.config.json, config.json, skill-activation.json) can be committed
+# Data directory (vector DB, cloned repos) and logs are not committed
+.bluera/
+!.bluera/
+!.bluera/bluera-knowledge/
+!.bluera/bluera-knowledge/stores.config.json
+!.bluera/bluera-knowledge/config.json
+!.bluera/bluera-knowledge/skill-activation.json
+.bluera/bluera-knowledge/data/
+.bluera/bluera-knowledge/logs/
