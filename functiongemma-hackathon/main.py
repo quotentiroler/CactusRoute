@@ -558,13 +558,32 @@ def repair_output(calls, tools, user_text):
 # Keeps execution on-device (no cloud call).
 # ═══════════════════════════════════════════════════════════════════════════════
 
+_TOOL_SYNONYMS = {
+    "reminder": ["remind", "reminder", "remember"],
+    "alarm": ["alarm", "wake"],
+    "timer": ["timer", "countdown"],
+    "music": ["music", "play", "song", "listen"],
+    "weather": ["weather", "forecast", "temperature"],
+    "message": ["message", "text", "send", "sms"],
+    "contacts": ["contact", "find", "search", "look"],
+}
+
+
 def _tool_relevance(tool, user_text):
-    """Score tool relevance to user text using name/description keywords."""
+    """Score tool relevance to user text using name/description keywords + synonyms."""
     text_lower = user_text.lower()
     score = 0
-    for word in tool["name"].replace("_", " ").split():
-        if word.lower() in text_lower:
+    tool_words = tool["name"].replace("_", " ").split()
+    for word in tool_words:
+        wl = word.lower()
+        if wl in text_lower:
             score += 3
+        # Check synonyms
+        synonyms = _TOOL_SYNONYMS.get(wl, [])
+        for syn in synonyms:
+            if syn in text_lower:
+                score += 3
+                break
     for word in tool.get("description", "").lower().split():
         if len(word) > 3 and word in text_lower:
             score += 1
@@ -851,6 +870,43 @@ def generate_hybrid(messages, tools):
             else:
                 intent_ok = False
 
+    # ── Step 6b: Extraction cross-check ──
+    # If model passes validation, verify it chose the same tool as extraction.
+    # This catches cases where model picks wrong tool (e.g. set_alarm instead
+    # of create_reminder) which would pass validation but give F1=0.00.
+    if is_valid and sem_valid and intent_ok:
+        expected_intents = count_expected_intents(messages)
+        det_check = build_calls_from_text(user_text, tools, max_calls=expected_intents)
+        if det_check:
+            model_tools = {c["name"] for c in repaired}
+            extract_tools = {c["name"] for c in det_check}
+            if model_tools != extract_tools:
+                # Extraction disagrees with model on tool choice
+                # Use relevance of the TOP extraction pick vs model pick
+                best_extract = det_check[0]
+                best_extract_rel = _tool_relevance(
+                    next(t for t in tools if t["name"] == best_extract["name"]), user_text
+                )
+                model_rel = max(
+                    (_tool_relevance(t, user_text) for t in tools if t["name"] in model_tools),
+                    default=0,
+                )
+                if best_extract_rel > model_rel:
+                    # Extraction picked more relevant tool — override model
+                    coerce_arg_types(det_check, tools)
+                    dv, _ = validate_output(det_check, tools)
+                    if dv:
+                        ds, _ = semantic_validate(det_check, tools, user_text)
+                        if ds:
+                            return {
+                                "function_calls": det_check,
+                                "total_time_ms": local_time,
+                                "confidence": 0.5,
+                                "source": "on-device",
+                                "_detail": "on-device (extract-override)",
+                                "difficulty": difficulty,
+                            }
+
     # ── Step 7: Accept if all gates pass and confident ──
     if is_valid and sem_valid and intent_ok and local["confidence"] >= threshold:
         local["source"] = "on-device"
@@ -907,13 +963,12 @@ def _try_extraction_then_cloud(messages, tools, local, difficulty, user_text, re
     """Try deterministic extraction; fall to cloud only if extraction also fails."""
     local_time = local.get("total_time_ms", 0)
 
-    # Determine how many calls to extract
     expected_intents = count_expected_intents(messages)
-    
+
     if difficulty == "hard":
         det_calls = build_calls_from_segments(user_text, tools)
     else:
-        # For easy/medium, limit extraction to expected intent count
+        # For easy/medium, limit to expected intent count to avoid spurious extra calls
         det_calls = build_calls_from_text(user_text, tools, max_calls=expected_intents)
 
     if det_calls:

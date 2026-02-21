@@ -2471,6 +2471,49 @@ class TestFullPipelineFallback(unittest.TestCase):
                         f"Expected 10, got {call['arguments'].get('minutes')}")
         self.assertEqual(result.get("source"), "on-device")
 
+    def test_reminder_among_four_model_picks_wrong_tool(self):
+        """When cactus picks set_alarm instead of create_reminder, extraction cross-check overrides."""
+        BENCH_TOOL_CREATE_REMINDER = {
+            "name": "create_reminder",
+            "description": "Create a reminder with a title and time",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Reminder title"},
+                    "time": {"type": "string", "description": "Time for the reminder (e.g. 3:00 PM)"},
+                },
+                "required": ["title", "time"],
+            },
+        }
+        BENCH_TOOLS = [TOOL_GET_WEATHER, TOOL_SEND_MESSAGE, BENCH_TOOL_CREATE_REMINDER, TOOL_SET_ALARM]
+
+        user_text = "Remind me to call the dentist at 2:00 PM."
+
+        # Model picks WRONG TOOL: set_alarm instead of create_reminder
+        wrong_tool_output = json.dumps({
+            "function_calls": [
+                {"name": "set_alarm", "arguments": {"hour": 14, "minute": 0}}
+            ],
+            "confidence": 0.9,
+            "total_time_ms": 50
+        })
+
+        with patch("main.cactus_complete", return_value=wrong_tool_output):
+            result = generate_hybrid(
+                [{"role": "user", "content": user_text}],
+                BENCH_TOOLS
+            )
+
+        # Should have used extraction cross-check to pick create_reminder
+        reminder_calls = [c for c in result["function_calls"] if c["name"] == "create_reminder"]
+        self.assertGreaterEqual(len(reminder_calls), 1,
+                               f"Expected create_reminder, got {result['function_calls']}")
+        call = reminder_calls[0]
+        self.assertEqual(call["arguments"]["title"], "call the dentist",
+                        f"Expected 'call the dentist', got '{call['arguments'].get('title')}'")
+        self.assertEqual(call["arguments"]["time"], "2:00 PM")
+        self.assertEqual(result.get("source"), "on-device")
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Run
