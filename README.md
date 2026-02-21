@@ -91,31 +91,40 @@ cactus-hack/
 
 ## Quick Start
 
-### Run Tests (any platform)
+### Prerequisites
+- [uv](https://docs.astral.sh/uv/) (Python package manager)
+- Mac with Cactus SDK for benchmark/demo (tests run anywhere)
+- `GEMINI_API_KEY` environment variable
+
+### Setup
 ```bash
 cd functiongemma-hackathon
-python tests.py -v            # 57 tests, 0.006s, no dependencies
+uv sync
+```
+
+### Run Tests (any platform)
+```bash
+uv run python tests.py -v     # 57 tests, 0.006s, no Cactus needed
 ```
 
 ### Run Benchmark (Mac only — requires Cactus)
 ```bash
-cd functiongemma-hackathon
 export GEMINI_API_KEY="your-key"
-python benchmark.py
+uv run python benchmark.py
 ```
 
 ### Run Demo (Mac only — requires Cactus)
 ```bash
-python demo.py                # Curated scenarios with dashboard
-python demo.py --interactive  # Free-form text input
-python demo.py --voice        # Voice-to-action via Whisper
-python demo.py --compare      # Baseline vs CactusRoute side-by-side
-python demo.py --benchmark    # Full 30-case benchmark run
+uv run python demo.py                # Curated scenarios with dashboard
+uv run python demo.py --interactive  # Free-form text input
+uv run python demo.py --voice        # Voice-to-action via Whisper
+uv run python demo.py --compare      # Baseline vs CactusRoute side-by-side
+uv run python demo.py --benchmark    # Full 30-case benchmark run
 ```
 
 ### Submit to Leaderboard
 ```bash
-python submit.py --team "YourTeamName" --location "YourCity"
+uv run python submit.py --team "YourTeamName" --location "YourCity"
 ```
 
 ## Key Optimizations Over Baseline
