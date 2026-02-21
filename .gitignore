@@ -63,3 +63,5 @@ deep-research-mcp-server/
 !.bluera/bluera-knowledge/skill-activation.json
 .bluera/bluera-knowledge/data/
 .bluera/bluera-knowledge/logs/
+
+papers/*.pdf
