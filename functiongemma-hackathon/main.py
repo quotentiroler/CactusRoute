@@ -492,16 +492,20 @@ def repair_output(calls, tools, user_text):
             val = args[pname]
 
             # AM/PM hour correction
-            if role == ROLE_HOUR and isinstance(val, (int, float)):
-                hour = int(val)
-                if "pm" in text_lower and 1 <= hour <= 11:
-                    args[pname] = hour + 12
-                elif "am" in text_lower and hour == 12:
-                    args[pname] = 0
-                elif hour < 0 or hour > 23:
-                    ext = extract_for_role(ROLE_HOUR, user_text)
-                    if ext is not None:
-                        args[pname] = ext
+            if role == ROLE_HOUR and isinstance(val, (int, float, str)):
+                try:
+                    hour = int(val)
+                except (ValueError, TypeError):
+                    hour = None
+                if hour is not None:
+                    if "pm" in text_lower and 1 <= hour <= 11:
+                        args[pname] = hour + 12
+                    elif "am" in text_lower and hour == 12:
+                        args[pname] = 0
+                    elif hour < 0 or hour > 23:
+                        ext = extract_for_role(ROLE_HOUR, user_text)
+                        if ext is not None:
+                            args[pname] = ext
 
             # Fix negative integers
             if ptype == "integer" and isinstance(val, (int, float)):

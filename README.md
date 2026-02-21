@@ -141,7 +141,7 @@ cactus-hack/
 │   ├── benchmark.py           ← Official benchmark (30 cases: 10 easy/10 med/10 hard)
 │   ├── submit.py              ← Leaderboard submission script
 │   ├── demo.py                ← Rich interactive demo (4 modes)
-│   └── tests.py               ← 162 unit tests, 18 test classes (any platform)
+│   └── tests.py               ← 206 unit tests, 23 test classes (any platform)
 │
 ├── deep-research-mcp-server/  ← Deep research pipeline (Gemini-powered)
 │   ├── src/                   ← TypeScript source
@@ -169,7 +169,7 @@ uv sync
 
 ### Run Tests (any platform)
 ```bash
-uv run python tests.py -v     # 162 tests, 18 classes, ~0.01s, no Cactus needed
+uv run python tests.py -v     # 206 tests, 23 classes, ~0.01s, no Cactus needed
 ```
 
 ### Run Benchmark (Mac only — requires Cactus)
@@ -212,14 +212,14 @@ uv run python submit.py --team "YourTeamName" --location "YourCity"
 
 ## Test Suite
 
-162 tests across 18 test classes — runs on any platform, no Cactus or API keys needed:
+206 tests across 23 test classes — runs on any platform, no Cactus or API keys needed:
 
 | Test Class | Tests | What it covers |
 |-----------|-------|----------------|
 | `TestEstimateDifficulty` | 9 | Tool count + multi-intent classification |
 | `TestCountExpectedIntents` | 7 | NLP-based intent counting |
 | `TestCoerceArgTypes` | 8 | Schema-driven type coercion |
-| `TestValidateOutput` | 6 | Structural validation (names + params) |
+| `TestValidateOutput` | 8 | Structural validation (names + params) |
 | `TestInferParamRole` | 12 | Semantic role inference from schema |
 | `TestExtractForRole` | 23 | Regex extraction for all 11 roles |
 | `TestSemanticValidate` | 6 | Word-overlap + range validation |
@@ -234,6 +234,11 @@ uv run python submit.py --team "YourTeamName" --location "YourCity"
 | `TestAugmentCalls` | 5 | Missing intent augmentation |
 | `TestBuildCallsFromSegments` | 6 | Segmented extraction pipeline |
 | `TestBenchmarkExtraction` | 14 | Benchmark-realistic extraction patterns |
+| `TestExtractionF1` | 17 | F1 scoring against real benchmark expected values |
+| `TestRepairChainSafety` | 9 | Repair doesn't degrade valid output |
+| `TestCrossEntityConfusion` | 4 | Entity isolation across tools/params |
+| `TestSemanticEdgeCases` | 9 | Hallucination rejection + edge cases |
+| `TestRoutingPipelineIntegration` | 5 | Full pipeline F1 with realistic model failures |
 
 ## Research
 

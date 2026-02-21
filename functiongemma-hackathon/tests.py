@@ -1641,6 +1641,533 @@ class TestBenchmarkExtraction(unittest.TestCase):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Test: F1 Scoring Against Actual Benchmark Data
+#
+# These test that our extraction pipeline produces EXACTLY the values the
+# benchmark expects — not just "something reasonable" but the actual ground
+# truth used to compute F1. If these fail, extraction will lose scoring points.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Replicate benchmark.py F1 computation so tests are self-contained
+def _normalize_val(v):
+    if isinstance(v, str):
+        return v.strip().lower()
+    return v
+
+def _call_matches(predicted, expected):
+    if predicted["name"] != expected["name"]:
+        return False
+    for key, exp_val in expected.get("arguments", {}).items():
+        if key not in predicted.get("arguments", {}):
+            return False
+        if _normalize_val(predicted["arguments"][key]) != _normalize_val(exp_val):
+            return False
+    return True
+
+def _compute_f1(predicted_calls, expected_calls):
+    if not predicted_calls and not expected_calls:
+        return 1.0
+    if not predicted_calls or not expected_calls:
+        return 0.0
+    matched = 0
+    used = set()
+    for exp in expected_calls:
+        for i, pred in enumerate(predicted_calls):
+            if i not in used and _call_matches(pred, exp):
+                matched += 1
+                used.add(i)
+                break
+    precision = matched / len(predicted_calls)
+    recall = matched / len(expected_calls)
+    if precision + recall == 0:
+        return 0.0
+    return 2 * precision * recall / (precision + recall)
+
+
+class TestExtractionF1(unittest.TestCase):
+    """Test that extraction output scores F1=1.0 against real benchmark expected values.
+
+    If any of these fail, our deterministic extraction fallback will LOSE POINTS
+    on the actual benchmark. These are the most impactful tests in the suite.
+    """
+
+    def _assert_f1(self, user_text, tools, expected_calls, min_f1=1.0):
+        """Extract calls and verify they achieve target F1 vs benchmark answers."""
+        calls = build_calls_from_segments(user_text, tools)
+        coerce_arg_types(calls, tools)
+        f1 = _compute_f1(calls, expected_calls)
+        self.assertGreaterEqual(
+            f1, min_f1,
+            f"F1={f1:.2f} < {min_f1} for '{user_text}'\n"
+            f"  Predicted: {calls}\n"
+            f"  Expected:  {expected_calls}",
+        )
+
+    # ── Easy benchmarks: extraction should get F1=1.0 ──
+
+    def test_f1_weather_sf(self):
+        self._assert_f1(
+            "What is the weather in San Francisco?",
+            [TOOL_GET_WEATHER],
+            [{"name": "get_weather", "arguments": {"location": "San Francisco"}}],
+        )
+
+    def test_f1_alarm_10am(self):
+        self._assert_f1(
+            "Set an alarm for 10 AM.",
+            [TOOL_SET_ALARM],
+            [{"name": "set_alarm", "arguments": {"hour": 10, "minute": 0}}],
+        )
+
+    def test_f1_message_alice(self):
+        self._assert_f1(
+            "Send a message to Alice saying good morning.",
+            [TOOL_SEND_MESSAGE],
+            [{"name": "send_message", "arguments": {"recipient": "Alice", "message": "good morning"}}],
+        )
+
+    def test_f1_weather_london(self):
+        self._assert_f1(
+            "What's the weather like in London?",
+            [TOOL_GET_WEATHER],
+            [{"name": "get_weather", "arguments": {"location": "London"}}],
+        )
+
+    def test_f1_alarm_6am(self):
+        self._assert_f1(
+            "Wake me up at 6 AM.",
+            [TOOL_SET_ALARM],
+            [{"name": "set_alarm", "arguments": {"hour": 6, "minute": 0}}],
+        )
+
+    def test_f1_play_bohemian(self):
+        self._assert_f1(
+            "Play Bohemian Rhapsody.",
+            [TOOL_PLAY_MUSIC],
+            [{"name": "play_music", "arguments": {"song": "Bohemian Rhapsody"}}],
+        )
+
+    def test_f1_timer_5min(self):
+        self._assert_f1(
+            "Set a timer for 5 minutes.",
+            [TOOL_SET_TIMER],
+            [{"name": "set_timer", "arguments": {"minutes": 5}}],
+        )
+
+    def test_f1_search_bob(self):
+        self._assert_f1(
+            "Find Bob in my contacts.",
+            [TOOL_SEARCH_CONTACTS],
+            [{"name": "search_contacts", "arguments": {"query": "Bob"}}],
+        )
+
+    def test_f1_weather_paris(self):
+        self._assert_f1(
+            "How's the weather in Paris?",
+            [TOOL_GET_WEATHER],
+            [{"name": "get_weather", "arguments": {"location": "Paris"}}],
+        )
+
+    # ── Medium benchmarks: extraction should still get F1=1.0 ──
+
+    def test_f1_message_john_among_three(self):
+        self._assert_f1(
+            "Send a message to John saying hello.",
+            [TOOL_GET_WEATHER, TOOL_SEND_MESSAGE, TOOL_SET_ALARM],
+            [{"name": "send_message", "arguments": {"recipient": "John", "message": "hello"}}],
+        )
+
+    def test_f1_alarm_815_among_three(self):
+        self._assert_f1(
+            "Set an alarm for 8:15 AM.",
+            [TOOL_SEND_MESSAGE, TOOL_SET_ALARM, TOOL_GET_WEATHER],
+            [{"name": "set_alarm", "arguments": {"hour": 8, "minute": 15}}],
+        )
+
+    def test_f1_timer_10min_among_three(self):
+        self._assert_f1(
+            "Set a timer for 10 minutes.",
+            [TOOL_SET_ALARM, TOOL_SET_TIMER, TOOL_PLAY_MUSIC],
+            [{"name": "set_timer", "arguments": {"minutes": 10}}],
+        )
+
+    def test_f1_search_sarah_among_four(self):
+        self._assert_f1(
+            "Look up Sarah in my contacts.",
+            [TOOL_SEND_MESSAGE, TOOL_GET_WEATHER, TOOL_SEARCH_CONTACTS, TOOL_SET_ALARM],
+            [{"name": "search_contacts", "arguments": {"query": "Sarah"}}],
+        )
+
+    # ── Hard benchmarks: extraction should get F1 ≥ 0.5 (partial credit) ──
+
+    def test_f1_message_and_weather(self):
+        self._assert_f1(
+            "Send a message to Bob saying hi and get the weather in London.",
+            [TOOL_GET_WEATHER, TOOL_SEND_MESSAGE, TOOL_SET_ALARM],
+            [
+                {"name": "send_message", "arguments": {"recipient": "Bob", "message": "hi"}},
+                {"name": "get_weather", "arguments": {"location": "London"}},
+            ],
+        )
+
+    def test_f1_alarm_and_weather(self):
+        self._assert_f1(
+            "Set an alarm for 7:30 AM and check the weather in New York.",
+            [TOOL_GET_WEATHER, TOOL_SET_ALARM, TOOL_SEND_MESSAGE],
+            [
+                {"name": "set_alarm", "arguments": {"hour": 7, "minute": 30}},
+                {"name": "get_weather", "arguments": {"location": "New York"}},
+            ],
+        )
+
+    def test_f1_timer_and_music(self):
+        self._assert_f1(
+            "Set a timer for 20 minutes and play lo-fi beats.",
+            [TOOL_SET_TIMER, TOOL_PLAY_MUSIC, TOOL_GET_WEATHER, TOOL_SET_ALARM],
+            [
+                {"name": "set_timer", "arguments": {"minutes": 20}},
+                {"name": "play_music", "arguments": {"song": "lo-fi beats"}},
+            ],
+        )
+
+    def test_f1_weather_and_music(self):
+        self._assert_f1(
+            "Check the weather in Miami and play summer hits.",
+            [TOOL_GET_WEATHER, TOOL_PLAY_MUSIC, TOOL_SET_TIMER, TOOL_SEND_MESSAGE],
+            [
+                {"name": "get_weather", "arguments": {"location": "Miami"}},
+                {"name": "play_music", "arguments": {"song": "summer hits"}},
+            ],
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Test: Repair Chain Safety
+#
+# Validates that repair_output() does not make valid output WORSE.
+# The repair→validate→semantic_validate chain must be monotonically
+# improving — never turning a correct call into an incorrect one.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestRepairChainSafety(unittest.TestCase):
+    """Verify repair does not degrade valid output or introduce errors."""
+
+    def test_already_correct_weather_unchanged(self):
+        """Repair should not touch already-correct output."""
+        calls = [{"name": "get_weather", "arguments": {"location": "London"}}]
+        repaired = repair_output(calls, [TOOL_GET_WEATHER], "What's the weather in London?")
+        self.assertEqual(repaired[0]["arguments"]["location"], "London")
+
+    def test_already_correct_alarm_unchanged(self):
+        """hour=7, minute=30 for '7:30 AM' should be untouched."""
+        calls = [{"name": "set_alarm", "arguments": {"hour": 7, "minute": 30}}]
+        repaired = repair_output(calls, [TOOL_SET_ALARM], "Set alarm for 7:30 AM")
+        self.assertEqual(repaired[0]["arguments"]["hour"], 7)
+        self.assertEqual(repaired[0]["arguments"]["minute"], 30)
+
+    def test_already_correct_message_unchanged(self):
+        calls = [{"name": "send_message", "arguments": {"recipient": "Alice", "message": "hello"}}]
+        repaired = repair_output(calls, [TOOL_SEND_MESSAGE], "Send Alice a message saying hello")
+        self.assertEqual(repaired[0]["arguments"]["recipient"], "Alice")
+        self.assertEqual(repaired[0]["arguments"]["message"], "hello")
+
+    def test_repair_then_validate_still_valid(self):
+        """Repaired output must pass validation — repair should not break structure."""
+        calls = [{"name": "set_alarm", "arguments": {"hour": 10}}]  # missing minute
+        repaired = repair_output(calls, [TOOL_SET_ALARM], "Set alarm for 10 AM")
+        coerce_arg_types(repaired, [TOOL_SET_ALARM])
+        valid, reason = validate_output(repaired, [TOOL_SET_ALARM])
+        self.assertTrue(valid, f"Repaired output failed validation: {reason}")
+
+    def test_repair_then_semantic_validate_still_valid(self):
+        """Repaired output must also pass semantic validation."""
+        calls = [{"name": "set_alarm", "arguments": {"hour": 10}}]  # missing minute
+        text = "Set alarm for 10 AM"
+        repaired = repair_output(calls, [TOOL_SET_ALARM], text)
+        coerce_arg_types(repaired, [TOOL_SET_ALARM])
+        ok, reason = semantic_validate(repaired, [TOOL_SET_ALARM], text)
+        self.assertTrue(ok, f"Repaired output failed semantic validation: {reason}")
+
+    def test_ampm_repair_passes_full_chain(self):
+        """AM/PM repair → validate → semantic_validate must all pass."""
+        calls = [{"name": "set_alarm", "arguments": {"hour": 10, "minute": 0}}]
+        text = "Set alarm for 10 PM"
+        repaired = repair_output(calls, [TOOL_SET_ALARM], text)
+        coerce_arg_types(repaired, [TOOL_SET_ALARM])
+
+        valid, r1 = validate_output(repaired, [TOOL_SET_ALARM])
+        self.assertTrue(valid, f"Validation: {r1}")
+
+        sem_ok, r2 = semantic_validate(repaired, [TOOL_SET_ALARM], text)
+        self.assertTrue(sem_ok, f"Semantic: {r2}")
+
+        self.assertEqual(repaired[0]["arguments"]["hour"], 22)
+
+    def test_string_hour_pm_repair(self):
+        """String hour '3' should be corrected to 15 for PM queries."""
+        calls = [{"name": "set_alarm", "arguments": {"hour": "3", "minute": "0"}}]
+        repaired = repair_output(calls, [TOOL_SET_ALARM], "Set alarm for 3 PM")
+        self.assertEqual(repaired[0]["arguments"]["hour"], 15)
+
+    def test_location_repair_matches_benchmark_f1(self):
+        """Wrong location repaired → F1 should be 1.0 vs expected."""
+        calls = [{"name": "get_weather", "arguments": {"location": "Tokyo"}}]
+        repaired = repair_output(calls, [TOOL_GET_WEATHER], "What's the weather in Paris?")
+        coerce_arg_types(repaired, [TOOL_GET_WEATHER])
+        expected = [{"name": "get_weather", "arguments": {"location": "Paris"}}]
+        f1 = _compute_f1(repaired, expected)
+        self.assertEqual(f1, 1.0)
+
+    def test_repair_multi_call_all_pass_chain(self):
+        """Multi-call repair must preserve all calls through the full chain."""
+        calls = [
+            {"name": "set_alarm", "arguments": {"hour": 7, "minute": 30}},
+            {"name": "get_weather", "arguments": {"location": "New York"}},
+        ]
+        text = "Set alarm for 7:30 AM and check weather in New York"
+        tools = [TOOL_SET_ALARM, TOOL_GET_WEATHER]
+        repaired = repair_output(calls, tools, text)
+        coerce_arg_types(repaired, tools)
+
+        self.assertEqual(len(repaired), 2)
+        valid, _ = validate_output(repaired, tools)
+        self.assertTrue(valid)
+        sem_ok, _ = semantic_validate(repaired, tools, text)
+        self.assertTrue(sem_ok)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Test: Cross-Entity Confusion
+#
+# When a query mentions multiple named entities (people, places), extraction
+# and repair must assign each value to the correct parameter, not confuse them.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestCrossEntityConfusion(unittest.TestCase):
+    """Verify that entities don't get mixed up across tools/params."""
+
+    def test_bob_is_recipient_not_location(self):
+        """'Send Bob a message about Paris weather' → Bob=recipient, not location."""
+        calls = build_calls_from_text(
+            "Send Bob a message saying check Paris weather",
+            [TOOL_SEND_MESSAGE],
+        )
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["arguments"]["recipient"], "Bob")
+        self.assertNotEqual(calls[0]["arguments"]["message"], "Bob")
+
+    def test_paris_is_location_not_recipient(self):
+        """In a weather query, Paris goes to location, not a person field."""
+        calls = build_calls_from_text(
+            "What's the weather in Paris?",
+            [TOOL_GET_WEATHER, TOOL_SEND_MESSAGE],
+        )
+        weather_calls = [c for c in calls if c["name"] == "get_weather"]
+        self.assertEqual(len(weather_calls), 1)
+        self.assertEqual(weather_calls[0]["arguments"]["location"], "Paris")
+
+    def test_multi_tool_entities_separated(self):
+        """'Send Bob hi and get weather in London' → Bob→recipient, London→location."""
+        calls = build_calls_from_segments(
+            "Send Bob a message saying hi and get the weather in London",
+            [TOOL_SEND_MESSAGE, TOOL_GET_WEATHER],
+        )
+        msg_calls = [c for c in calls if c["name"] == "send_message"]
+        weather_calls = [c for c in calls if c["name"] == "get_weather"]
+        self.assertEqual(len(msg_calls), 1)
+        self.assertEqual(len(weather_calls), 1)
+        self.assertEqual(msg_calls[0]["arguments"]["recipient"], "Bob")
+        self.assertEqual(weather_calls[0]["arguments"]["location"], "London")
+
+    def test_repair_doesnt_swap_entities(self):
+        """Repair with correct values should not swap them."""
+        calls = [
+            {"name": "send_message", "arguments": {"recipient": "Bob", "message": "hi"}},
+            {"name": "get_weather", "arguments": {"location": "London"}},
+        ]
+        text = "Send Bob a message saying hi and get the weather in London"
+        repaired = repair_output(calls, [TOOL_SEND_MESSAGE, TOOL_GET_WEATHER], text)
+        self.assertEqual(repaired[0]["arguments"]["recipient"], "Bob")
+        self.assertEqual(repaired[1]["arguments"]["location"], "London")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Test: Semantic Validate Edge Cases
+#
+# Tests for cases where word-overlap validation could incorrectly reject
+# valid output or incorrectly accept hallucinated output.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestSemanticEdgeCases(unittest.TestCase):
+    """Edge cases for semantic validation that could cause false positives/negatives."""
+
+    def test_short_location_accepted(self):
+        """Short location names like 'SF' (< 3 chars) should not trigger overlap check."""
+        calls = [{"name": "get_weather", "arguments": {"location": "SF"}}]
+        ok, _ = semantic_validate(calls, [TOOL_GET_WEATHER], "Weather in SF")
+        # "SF" has no word >= 3 chars, so val_words is empty, should pass
+        self.assertTrue(ok)
+
+    def test_hallucinated_location_rejected(self):
+        """Location that doesn't appear in user text at all should be rejected."""
+        calls = [{"name": "get_weather", "arguments": {"location": "Antarctica"}}]
+        ok, _ = semantic_validate(calls, [TOOL_GET_WEATHER], "Weather in Tokyo")
+        self.assertFalse(ok)
+
+    def test_case_insensitive_match(self):
+        """Semantic validation should be case-insensitive."""
+        calls = [{"name": "get_weather", "arguments": {"location": "LONDON"}}]
+        ok, _ = semantic_validate(calls, [TOOL_GET_WEATHER], "weather in london")
+        self.assertTrue(ok)
+
+    def test_hallucinated_recipient_rejected(self):
+        """Recipient not in user text should fail semantic check."""
+        calls = [{"name": "send_message", "arguments": {"recipient": "Charlie", "message": "hello"}}]
+        ok, _ = semantic_validate(calls, [TOOL_SEND_MESSAGE], "Send Alice a message saying hello")
+        self.assertFalse(ok)
+
+    def test_correct_integer_passes(self):
+        """Valid integer within range should pass."""
+        calls = [{"name": "set_alarm", "arguments": {"hour": 10, "minute": 30}}]
+        ok, _ = semantic_validate(calls, [TOOL_SET_ALARM], "Set alarm for 10:30 AM")
+        self.assertTrue(ok)
+
+    def test_hour_24_fails(self):
+        """hour=24 is out of 0-23 range."""
+        calls = [{"name": "set_alarm", "arguments": {"hour": 24, "minute": 0}}]
+        ok, _ = semantic_validate(calls, [TOOL_SET_ALARM], "Set alarm for midnight")
+        self.assertFalse(ok)
+
+    def test_minute_negative_fails(self):
+        """minute=-1 should fail range check."""
+        calls = [{"name": "set_alarm", "arguments": {"hour": 10, "minute": -1}}]
+        ok, _ = semantic_validate(calls, [TOOL_SET_ALARM], "Set alarm for 10 AM")
+        self.assertFalse(ok)
+
+    def test_zero_duration_fails(self):
+        """duration=0 should fail: must be > 0."""
+        calls = [{"name": "set_timer", "arguments": {"minutes": 0}}]
+        ok, _ = semantic_validate(calls, [TOOL_SET_TIMER], "Set timer for 0 minutes")
+        self.assertFalse(ok)
+
+    def test_multiword_location_overlap(self):
+        """'New York' should share word 'york' (>= 3 chars) with user text."""
+        calls = [{"name": "get_weather", "arguments": {"location": "New York"}}]
+        ok, _ = semantic_validate(calls, [TOOL_GET_WEATHER], "weather in New York")
+        self.assertTrue(ok)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Test: Routing Pipeline Integration
+#
+# End-to-end tests that verify the full generate_hybrid() pipeline produces
+# results that would actually score well — combining repair, validation,
+# extraction, augmentation, and retry in realistic sequences.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestRoutingPipelineIntegration(unittest.TestCase):
+    """Integration tests for realistic FunctionGemma failure modes through generate_hybrid()."""
+
+    def _mock_local(self, confidence=0.8, calls=None, cloud_handoff=False,
+                    spike_handoff=False, success=True, time_ms=50):
+        return {
+            "function_calls": calls or [],
+            "total_time_ms": time_ms,
+            "confidence": confidence,
+            "cloud_handoff": cloud_handoff,
+            "spike_handoff": spike_handoff,
+            "success": success,
+        }
+
+    @patch("main.generate_cloud")
+    @patch("main.generate_cactus")
+    def test_wrong_location_repaired_gets_f1_1(self, mock_cactus, mock_cloud):
+        """Model outputs Tokyo for 'weather in Paris' → repair fixes → F1=1.0, no cloud."""
+        mock_cactus.return_value = self._mock_local(
+            confidence=0.80,
+            calls=[{"name": "get_weather", "arguments": {"location": "Tokyo"}}],
+        )
+        msg = [{"role": "user", "content": "What's the weather in Paris?"}]
+        result = generate_hybrid(msg, [TOOL_GET_WEATHER])
+
+        self.assertIn("on-device", result["source"])
+        expected = [{"name": "get_weather", "arguments": {"location": "Paris"}}]
+        f1 = _compute_f1(result["function_calls"], expected)
+        self.assertEqual(f1, 1.0)
+
+    @patch("main.generate_cloud")
+    @patch("main.generate_cactus")
+    def test_string_hour_coerced_gets_f1_1(self, mock_cactus, mock_cloud):
+        """Model outputs {"hour": "10", "minute": "0"} → coercion → F1=1.0."""
+        mock_cactus.return_value = self._mock_local(
+            confidence=0.80,
+            calls=[{"name": "set_alarm", "arguments": {"hour": "10", "minute": "0"}}],
+        )
+        msg = [{"role": "user", "content": "Set alarm for 10 AM."}]
+        result = generate_hybrid(msg, [TOOL_SET_ALARM])
+
+        expected = [{"name": "set_alarm", "arguments": {"hour": 10, "minute": 0}}]
+        f1 = _compute_f1(result["function_calls"], expected)
+        self.assertEqual(f1, 1.0)
+
+    @patch("main.generate_cloud")
+    @patch("main.generate_cactus")
+    def test_missing_call_augmented_stays_on_device(self, mock_cactus, mock_cloud):
+        """Hard query: model only produces weather, augmentation adds message → on-device."""
+        mock_cactus.return_value = self._mock_local(
+            confidence=0.70,
+            calls=[{"name": "get_weather", "arguments": {"location": "London"}}],
+        )
+        msg = [{"role": "user", "content": "Send Bob a message saying hi and get the weather in London."}]
+        tools = [TOOL_GET_WEATHER, TOOL_SEND_MESSAGE, TOOL_SET_ALARM]
+        result = generate_hybrid(msg, tools)
+
+        self.assertIn("on-device", result["source"])
+        names = {c["name"] for c in result["function_calls"]}
+        self.assertIn("get_weather", names)
+        self.assertIn("send_message", names)
+
+        expected = [
+            {"name": "send_message", "arguments": {"recipient": "Bob", "message": "hi"}},
+            {"name": "get_weather", "arguments": {"location": "London"}},
+        ]
+        f1 = _compute_f1(result["function_calls"], expected)
+        self.assertGreaterEqual(f1, 0.5, f"F1 too low: {f1}")
+
+    @patch("main.generate_cloud")
+    @patch("main.generate_cactus")
+    def test_pm_correction_with_coercion_f1(self, mock_cactus, mock_cloud):
+        """Model outputs hour=3 for '3 PM' as int → repair fixes to 15 → F1=1.0."""
+        mock_cactus.return_value = self._mock_local(
+            confidence=0.85,
+            calls=[{"name": "set_alarm", "arguments": {"hour": 3, "minute": 0}}],
+        )
+        msg = [{"role": "user", "content": "Set alarm for 3 PM."}]
+        result = generate_hybrid(msg, [TOOL_SET_ALARM])
+
+        self.assertEqual(result["function_calls"][0]["arguments"]["hour"], 15)
+        expected = [{"name": "set_alarm", "arguments": {"hour": 15, "minute": 0}}]
+        f1 = _compute_f1(result["function_calls"], expected)
+        self.assertEqual(f1, 1.0)
+
+    @patch("main.generate_cloud")
+    @patch("main.generate_cactus")
+    def test_extraction_fallback_on_handoff_gets_f1(self, mock_cactus, mock_cloud):
+        """Cloud handoff for easy weather query → extraction produces F1=1.0 on-device."""
+        mock_cactus.return_value = self._mock_local(
+            confidence=0.0, cloud_handoff=True, calls=[],
+        )
+        msg = [{"role": "user", "content": "What's the weather in Paris?"}]
+        result = generate_hybrid(msg, [TOOL_GET_WEATHER])
+
+        self.assertIn("on-device", result["source"])
+        self.assertIn("extracted", result["source"])
+        expected = [{"name": "get_weather", "arguments": {"location": "Paris"}}]
+        f1 = _compute_f1(result["function_calls"], expected)
+        self.assertEqual(f1, 1.0)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Run
 # ═══════════════════════════════════════════════════════════════════════════════
 
