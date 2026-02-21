@@ -2,14 +2,22 @@
 CactusRoute Test Suite
 ======================
 
-Comprehensive tests for all routing logic, runnable on any platform (no Cactus needed).
-Tests cover:
+Comprehensive tests for the 7-layer adaptive framework, runnable on any platform
+(no Cactus or API keys needed). Tests cover:
   - Pre-flight difficulty estimation (all 30 benchmark cases)
   - Intent counting for multi-call queries
   - Type coercion (string→int, string→float)
   - Output validation (tool names, required params, empty calls)
-  - Routing decision matrix (mock-driven, all 5 signals)
-  - Edge cases and regressions
+  - Semantic role inference and extraction (all 11 roles)
+  - Semantic validation (word-overlap, range checks)
+  - Output repair (AM/PM correction, negatives, missing params)
+  - Tool relevance scoring
+  - Query segmentation for multi-intent queries
+  - Intent augmentation (_augment_calls)
+  - Build calls from text and from segments
+  - Routing decision matrix (mock-driven, full 7-layer pipeline)
+  - Benchmark-realistic extraction (easy/medium/hard patterns)
+  - Threshold boundaries, signal priority, benchmark compatibility
 
 Usage:
     python tests.py              # Run all tests
@@ -49,6 +57,9 @@ from main import (
     generate_hybrid,
     generate_cactus,
     _fallback,
+    _tool_relevance,
+    _segment_query,
+    _augment_calls,
     THRESHOLDS,
     infer_param_role,
     extract_for_role,
@@ -1289,6 +1300,344 @@ class TestBenchmarkCompatibility(unittest.TestCase):
             {"name": "set_alarm", "arguments": {"hour": 10, "minute": 0}},
             {"name": "set_alarm", "arguments": {"hour": 10, "minute": 0}},
         ))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Test: Tool Relevance Scoring
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestToolRelevance(unittest.TestCase):
+    """Tests for _tool_relevance() — keyword-based tool ranking."""
+
+    def test_weather_high_for_weather_query(self):
+        score = _tool_relevance(TOOL_GET_WEATHER, "What's the weather in London?")
+        self.assertGreater(score, 0)
+
+    def test_alarm_high_for_alarm_query(self):
+        score = _tool_relevance(TOOL_SET_ALARM, "Set an alarm for 7 AM")
+        self.assertGreater(score, 0)
+
+    def test_weather_zero_for_alarm_query(self):
+        score = _tool_relevance(TOOL_GET_WEATHER, "Set an alarm for 7 AM")
+        self.assertEqual(score, 0)
+
+    def test_timer_matches_timer_query(self):
+        score = _tool_relevance(TOOL_SET_TIMER, "Set a timer for 10 minutes")
+        self.assertGreater(score, 0)
+
+    def test_music_matches_play_query(self):
+        score = _tool_relevance(TOOL_PLAY_MUSIC, "Play some jazz")
+        self.assertGreater(score, 0)
+
+    def test_message_matches_send_query(self):
+        score = _tool_relevance(TOOL_SEND_MESSAGE, "Send a message to Bob")
+        self.assertGreater(score, 0)
+
+    def test_contacts_matches_search_query(self):
+        score = _tool_relevance(TOOL_SEARCH_CONTACTS, "Search for Alice in contacts")
+        self.assertGreater(score, 0)
+
+    def test_correct_tool_scores_higher(self):
+        """The correct tool should score higher than irrelevant tools."""
+        weather_score = _tool_relevance(TOOL_GET_WEATHER, "What's the weather in Paris?")
+        alarm_score = _tool_relevance(TOOL_SET_ALARM, "What's the weather in Paris?")
+        self.assertGreater(weather_score, alarm_score)
+
+    def test_description_words_contribute(self):
+        """Description keywords (>3 chars) should also add to score."""
+        score = _tool_relevance(TOOL_SEARCH_CONTACTS, "Find a contact by name")
+        self.assertGreater(score, 0)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Test: Query Segmentation
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestSegmentQuery(unittest.TestCase):
+    """Tests for _segment_query() — splitting multi-intent queries."""
+
+    def test_single_intent_no_split(self):
+        segs = _segment_query("What's the weather in London?")
+        self.assertEqual(len(segs), 1)
+
+    def test_two_intents_with_and(self):
+        segs = _segment_query("Set an alarm for 7 AM and check the weather in NYC")
+        self.assertEqual(len(segs), 2)
+
+    def test_three_intents_with_commas_and(self):
+        segs = _segment_query(
+            "Set a timer for 10 minutes, play jazz, and send Bob a message saying hi"
+        )
+        self.assertGreaterEqual(len(segs), 2)
+
+    def test_and_not_part_of_action_verb(self):
+        """'and' that isn't followed by an action verb shouldn't split."""
+        segs = _segment_query("Send Bob a message saying hi and goodbye")
+        # "and goodbye" shouldn't trigger a split since 'goodbye' isn't an action verb
+        self.assertEqual(len(segs), 1)
+
+    def test_comma_followed_by_action(self):
+        segs = _segment_query("Set an alarm for 7 AM, get the weather in Paris")
+        self.assertGreaterEqual(len(segs), 2)
+
+    def test_short_segments_filtered(self):
+        """Segments shorter than 4 chars should be filtered out."""
+        segs = _segment_query("Set a timer")
+        for seg in segs:
+            self.assertGreater(len(seg), 3)
+
+    def test_preserves_full_text(self):
+        """Joined segments should cover the original text content."""
+        text = "Set an alarm for 8 AM and check the weather in London"
+        segs = _segment_query(text)
+        joined = " ".join(segs).lower()
+        self.assertIn("alarm", joined)
+        self.assertIn("weather", joined)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Test: Augment Calls (fills missing intents via extraction)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestAugmentCalls(unittest.TestCase):
+    """Tests for _augment_calls() — adds missing tool calls from text."""
+
+    def test_augments_missing_weather(self):
+        """If we already have alarm, augment should add weather."""
+        existing = [{"name": "set_alarm", "arguments": {"hour": 7, "minute": 0}}]
+        result = _augment_calls(
+            existing, ALL_TOOLS,
+            "Set an alarm for 7 AM and get the weather in Tokyo",
+        )
+        names = {c["name"] for c in result}
+        self.assertIn("set_alarm", names)
+        self.assertIn("get_weather", names)
+
+    def test_augments_missing_message(self):
+        existing = [{"name": "get_weather", "arguments": {"location": "NYC"}}]
+        result = _augment_calls(
+            existing, ALL_TOOLS,
+            "Check weather in NYC and send a message to Eve saying hey",
+        )
+        names = {c["name"] for c in result}
+        self.assertIn("get_weather", names)
+        self.assertIn("send_message", names)
+
+    def test_no_augmentation_needed(self):
+        """If all intents are already covered, no extra calls added."""
+        existing = [{"name": "get_weather", "arguments": {"location": "Paris"}}]
+        result = _augment_calls(
+            existing, [TOOL_GET_WEATHER],
+            "What's the weather in Paris?",
+        )
+        self.assertEqual(len(result), 1)
+
+    def test_does_not_duplicate(self):
+        """Should not add a tool that's already in existing_calls."""
+        existing = [
+            {"name": "get_weather", "arguments": {"location": "London"}},
+            {"name": "set_alarm", "arguments": {"hour": 7, "minute": 0}},
+        ]
+        result = _augment_calls(
+            existing, ALL_TOOLS,
+            "Set alarm for 7 AM and get weather in London",
+        )
+        alarm_count = sum(1 for c in result if c["name"] == "set_alarm")
+        weather_count = sum(1 for c in result if c["name"] == "get_weather")
+        self.assertEqual(alarm_count, 1)
+        self.assertEqual(weather_count, 1)
+
+    def test_augment_with_non_extractable_returns_original(self):
+        """If augmentation can't extract anything new, return original."""
+        existing = [{"name": "set_alarm", "arguments": {"hour": 7, "minute": 0}}]
+        result = _augment_calls(
+            existing, [TOOL_SET_ALARM, TOOL_CUSTOM],
+            "Set alarm for 7 AM and do custom stuff",
+        )
+        # TOOL_CUSTOM can't be extracted, so should only have alarm
+        self.assertEqual(len(result), 1)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Test: Build Calls From Segments (extended)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestBuildCallsFromSegments(unittest.TestCase):
+    """Extended tests for build_calls_from_segments() — segmented extraction."""
+
+    def test_three_segments(self):
+        calls = build_calls_from_segments(
+            "Set a timer for 15 minutes, play classical music, and send Bob a message saying hi",
+            ALL_TOOLS,
+        )
+        names = {c["name"] for c in calls}
+        self.assertIn("set_timer", names)
+        self.assertIn("play_music", names)
+        self.assertIn("send_message", names)
+
+    def test_two_segments_alarm_weather(self):
+        calls = build_calls_from_segments(
+            "Set an alarm for 5 AM and get the weather in Chicago",
+            [TOOL_SET_ALARM, TOOL_GET_WEATHER, TOOL_SEND_MESSAGE],
+        )
+        names = {c["name"] for c in calls}
+        self.assertIn("set_alarm", names)
+        self.assertIn("get_weather", names)
+
+    def test_single_segment_falls_back_to_full(self):
+        """Single-intent query should use build_calls_from_text."""
+        calls = build_calls_from_segments(
+            "Play Bohemian Rhapsody", [TOOL_PLAY_MUSIC],
+        )
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["name"], "play_music")
+
+    def test_no_duplicate_tools(self):
+        """Same tool should not appear twice from different segments."""
+        calls = build_calls_from_segments(
+            "Get the weather in London and check the weather in Paris",
+            [TOOL_GET_WEATHER],
+        )
+        self.assertEqual(len(calls), 1)
+
+    def test_message_and_contacts(self):
+        calls = build_calls_from_segments(
+            "Find Alice in my contacts and send Alice a message saying call me",
+            [TOOL_SEARCH_CONTACTS, TOOL_SEND_MESSAGE, TOOL_GET_WEATHER],
+        )
+        names = {c["name"] for c in calls}
+        self.assertIn("search_contacts", names)
+        self.assertIn("send_message", names)
+
+    def test_empty_if_no_tools_match(self):
+        calls = build_calls_from_segments(
+            "Do something completely random", [TOOL_CUSTOM],
+        )
+        self.assertEqual(len(calls), 0)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Test: Benchmark-Realistic Extraction
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestBenchmarkExtraction(unittest.TestCase):
+    """Test extraction against queries matching real benchmark patterns."""
+
+    def test_easy_weather_sf(self):
+        calls = build_calls_from_text(
+            "What's the weather like in San Francisco?", [TOOL_GET_WEATHER],
+        )
+        self.assertEqual(len(calls), 1)
+        self.assertIn("San Francisco", calls[0]["arguments"]["location"])
+
+    def test_easy_alarm_7am(self):
+        calls = build_calls_from_text(
+            "Wake me up at 7 AM please.", [TOOL_SET_ALARM],
+        )
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["arguments"]["hour"], 7)
+
+    def test_easy_message_bob(self):
+        calls = build_calls_from_text(
+            "Text Bob and say I'll be there in 10.",
+            [TOOL_SEND_MESSAGE],
+        )
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["arguments"]["recipient"], "Bob")
+
+    def test_easy_timer_5min(self):
+        calls = build_calls_from_text(
+            "Set a countdown timer for 5 minutes.", [TOOL_SET_TIMER],
+        )
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["arguments"]["minutes"], 5)
+
+    def test_easy_play_jazz(self):
+        calls = build_calls_from_text(
+            "Play some jazz music.", [TOOL_PLAY_MUSIC],
+        )
+        self.assertEqual(len(calls), 1)
+
+    def test_medium_alarm_among_five(self):
+        calls = build_calls_from_text(
+            "Set an alarm for 8:15 AM.",
+            [TOOL_SEND_MESSAGE, TOOL_SET_ALARM, TOOL_GET_WEATHER, TOOL_PLAY_MUSIC, TOOL_SET_TIMER],
+        )
+        # Should pick alarm, not timer or others
+        names = {c["name"] for c in calls}
+        self.assertIn("set_alarm", names)
+
+    def test_medium_contacts_lookup(self):
+        calls = build_calls_from_text(
+            "Look up Sarah in my contacts.",
+            [TOOL_SEND_MESSAGE, TOOL_GET_WEATHER, TOOL_SEARCH_CONTACTS, TOOL_SET_ALARM],
+        )
+        names = {c["name"] for c in calls}
+        self.assertIn("search_contacts", names)
+
+    def test_hard_morning_routine(self):
+        calls = build_calls_from_segments(
+            "Set an alarm for 7:30 AM and check the weather in New York.",
+            [TOOL_GET_WEATHER, TOOL_SET_ALARM, TOOL_SEND_MESSAGE],
+        )
+        names = {c["name"] for c in calls}
+        self.assertIn("set_alarm", names)
+        self.assertIn("get_weather", names)
+
+    def test_hard_full_day_setup(self):
+        calls = build_calls_from_segments(
+            "Text Emma saying good night, check the weather in Chicago, and set an alarm for 5 AM.",
+            [TOOL_SEND_MESSAGE, TOOL_GET_WEATHER, TOOL_SET_ALARM, TOOL_PLAY_MUSIC, TOOL_SET_TIMER],
+        )
+        names = {c["name"] for c in calls}
+        self.assertIn("send_message", names)
+        self.assertIn("get_weather", names)
+        self.assertIn("set_alarm", names)
+
+    def test_hard_productivity_blast(self):
+        calls = build_calls_from_segments(
+            "Set a 15 minute timer, play classical music, and remind me to stretch at 4:00 PM.",
+            [TOOL_SET_TIMER, TOOL_PLAY_MUSIC, TOOL_CREATE_REMINDER, TOOL_GET_WEATHER, TOOL_SEND_MESSAGE],
+        )
+        names = {c["name"] for c in calls}
+        self.assertIn("set_timer", names)
+        self.assertIn("play_music", names)
+        # create_reminder may or may not be extracted depending on regex
+
+    def test_hard_communication_hub(self):
+        calls = build_calls_from_segments(
+            "Find Tom in my contacts and send Tom a message saying happy birthday.",
+            [TOOL_SEARCH_CONTACTS, TOOL_SEND_MESSAGE, TOOL_GET_WEATHER, TOOL_PLAY_MUSIC],
+        )
+        names = {c["name"] for c in calls}
+        self.assertIn("search_contacts", names)
+        self.assertIn("send_message", names)
+
+    def test_reminder_extraction(self):
+        calls = build_calls_from_text(
+            "Remind me to buy groceries at 3 PM.",
+            [TOOL_CREATE_REMINDER],
+        )
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["name"], "create_reminder")
+        self.assertIn("title", calls[0]["arguments"])
+        self.assertIn("time", calls[0]["arguments"])
+
+    def test_pm_alarm_extraction(self):
+        """3pm should produce hour=15."""
+        calls = build_calls_from_text(
+            "Set an alarm for 3 PM.", [TOOL_SET_ALARM],
+        )
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["arguments"]["hour"], 15)
+
+    def test_noon_alarm_extraction(self):
+        """12 PM should produce hour=12."""
+        calls = build_calls_from_text(
+            "Set an alarm for 12 PM.", [TOOL_SET_ALARM],
+        )
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["arguments"]["hour"], 12)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

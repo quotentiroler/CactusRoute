@@ -141,7 +141,7 @@ cactus-hack/
 │   ├── benchmark.py           ← Official benchmark (30 cases: 10 easy/10 med/10 hard)
 │   ├── submit.py              ← Leaderboard submission script
 │   ├── demo.py                ← Rich interactive demo (4 modes)
-│   └── tests.py               ← 121 unit tests, 10 test classes (any platform)
+│   └── tests.py               ← 162 unit tests, 18 test classes (any platform)
 │
 ├── deep-research-mcp-server/  ← Deep research pipeline (Gemini-powered)
 │   ├── src/                   ← TypeScript source
@@ -169,7 +169,7 @@ uv sync
 
 ### Run Tests (any platform)
 ```bash
-uv run python tests.py -v     # 121 tests, 10 classes, ~0.01s, no Cactus needed
+uv run python tests.py -v     # 162 tests, 18 classes, ~0.01s, no Cactus needed
 ```
 
 ### Run Benchmark (Mac only — requires Cactus)
@@ -212,7 +212,7 @@ uv run python submit.py --team "YourTeamName" --location "YourCity"
 
 ## Test Suite
 
-121 tests across 10 test classes — runs on any platform, no Cactus or API keys needed:
+162 tests across 18 test classes — runs on any platform, no Cactus or API keys needed:
 
 | Test Class | Tests | What it covers |
 |-----------|-------|----------------|
@@ -226,7 +226,14 @@ uv run python submit.py --team "YourTeamName" --location "YourCity"
 | `TestRepairOutput` | 7 | AM/PM, negatives, semantic repair |
 | `TestBuildCallsFromText` | 9 | Deterministic extraction pipeline |
 | `TestRoutingDecisions` | 21 | End-to-end routing with thresholds |
-| + 13 more | 13 | Threshold boundaries, signal priority, benchmark compat |
+| `TestThresholdBoundaries` | 5 | Exact boundary conditions for thresholds |
+| `TestSignalPriority` | 3 | Handoff checked before confidence |
+| `TestBenchmarkCompatibility` | 2 | F1 normalization + call matching |
+| `TestToolRelevance` | 9 | Keyword-based tool ranking |
+| `TestSegmentQuery` | 7 | Multi-intent query splitting |
+| `TestAugmentCalls` | 5 | Missing intent augmentation |
+| `TestBuildCallsFromSegments` | 6 | Segmented extraction pipeline |
+| `TestBenchmarkExtraction` | 14 | Benchmark-realistic extraction patterns |
 
 ## Research
 
