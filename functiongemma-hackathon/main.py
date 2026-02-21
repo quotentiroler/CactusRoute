@@ -444,7 +444,7 @@ def semantic_validate(calls, tools, user_text):
                     return False, f"semantic:{pname}={val}"
                 
                 # For extractable string roles, check extraction matches EXACTLY
-                if role in (ROLE_TITLE, ROLE_SONG, ROLE_LOCATION, ROLE_MESSAGE):
+                if role in (ROLE_TITLE, ROLE_SONG, ROLE_LOCATION, ROLE_MESSAGE, ROLE_TIME_STR):
                     extracted = extract_for_role(role, user_text)
                     if extracted is not None:
                         ext_norm = extracted.strip().lower()

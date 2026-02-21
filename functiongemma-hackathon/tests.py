@@ -2394,6 +2394,38 @@ class TestSemanticValidationRejectsWrongValues(unittest.TestCase):
         self.assertFalse(valid, f"Should reject partial title 'call dentist', got: {reason}")
         self.assertIn("extract-mismatch", reason.lower())
 
+    # ── Time format mismatch tests ──
+    def test_rejects_24h_time_format(self):
+        """Model says time='14:00', should reject since extraction='2:00 PM'"""
+        user_text = "Remind me to call the dentist at 2:00 PM."
+        calls = [{"name": "create_reminder", "arguments": {"title": "call the dentist", "time": "14:00"}}]
+        valid, reason = semantic_validate(calls, [TOOL_CREATE_REMINDER], user_text)
+        self.assertFalse(valid, f"Should reject 24h time format, got: {reason}")
+        self.assertIn("extract-mismatch", reason.lower())
+
+    def test_rejects_time_without_minutes(self):
+        """Model says time='2 PM', should reject since extraction='2:00 PM'"""
+        user_text = "Remind me to call the dentist at 2:00 PM."
+        calls = [{"name": "create_reminder", "arguments": {"title": "call the dentist", "time": "2 PM"}}]
+        valid, reason = semantic_validate(calls, [TOOL_CREATE_REMINDER], user_text)
+        self.assertFalse(valid, f"Should reject time without minutes, got: {reason}")
+        self.assertIn("extract-mismatch", reason.lower())
+
+    def test_rejects_lowercase_time(self):
+        """Model says time='2:00 pm', should be accepted (case-insensitive normalize)"""
+        user_text = "Remind me to call the dentist at 2:00 PM."
+        calls = [{"name": "create_reminder", "arguments": {"title": "call the dentist", "time": "2:00 pm"}}]
+        valid, reason = semantic_validate(calls, [TOOL_CREATE_REMINDER], user_text)
+        # "2:00 pm" lowered == "2:00 pm", extracted "2:00 PM" lowered == "2:00 pm" → match
+        self.assertTrue(valid, f"Should accept lowercase time, got: {reason}")
+
+    def test_accepts_correct_time_format(self):
+        """Model says time='2:00 PM', should accept since matches extraction"""
+        user_text = "Remind me to call the dentist at 2:00 PM."
+        calls = [{"name": "create_reminder", "arguments": {"title": "call the dentist", "time": "2:00 PM"}}]
+        valid, reason = semantic_validate(calls, [TOOL_CREATE_REMINDER], user_text)
+        self.assertTrue(valid, f"Should accept correct time, got: {reason}")
+
 
 class TestFullPipelineFallback(unittest.TestCase):
     """Test that generate_hybrid falls back to extraction when model returns wrong values."""
@@ -2511,6 +2543,87 @@ class TestFullPipelineFallback(unittest.TestCase):
         call = reminder_calls[0]
         self.assertEqual(call["arguments"]["title"], "call the dentist",
                         f"Expected 'call the dentist', got '{call['arguments'].get('title')}'")
+        self.assertEqual(call["arguments"]["time"], "2:00 PM")
+        self.assertEqual(result.get("source"), "on-device")
+
+    def test_reminder_among_four_model_returns_24h_time(self):
+        """When cactus returns 24h time format (14:00), should fall back to extraction."""
+        BENCH_TOOL_CREATE_REMINDER = {
+            "name": "create_reminder",
+            "description": "Create a reminder with a title and time",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Reminder title"},
+                    "time": {"type": "string", "description": "Time for the reminder (e.g. 3:00 PM)"},
+                },
+                "required": ["title", "time"],
+            },
+        }
+        BENCH_TOOLS = [TOOL_GET_WEATHER, TOOL_SEND_MESSAGE, BENCH_TOOL_CREATE_REMINDER, TOOL_SET_ALARM]
+
+        user_text = "Remind me to call the dentist at 2:00 PM."
+
+        # Model returns correct title but WRONG time format
+        wrong_time_output = json.dumps({
+            "function_calls": [
+                {"name": "create_reminder", "arguments": {"title": "call the dentist", "time": "14:00"}}
+            ],
+            "confidence": 0.9,
+            "total_time_ms": 50
+        })
+
+        with patch("main.cactus_complete", return_value=wrong_time_output):
+            result = generate_hybrid(
+                [{"role": "user", "content": user_text}],
+                BENCH_TOOLS
+            )
+
+        # Should have rejected 24h time and fallen back to extraction
+        reminder_calls = [c for c in result["function_calls"] if c["name"] == "create_reminder"]
+        self.assertGreaterEqual(len(reminder_calls), 1,
+                               f"Expected create_reminder, got {result['function_calls']}")
+        call = reminder_calls[0]
+        self.assertEqual(call["arguments"]["time"], "2:00 PM",
+                        f"Expected '2:00 PM', got '{call['arguments'].get('time')}'")
+        self.assertEqual(result.get("source"), "on-device")
+
+    def test_reminder_among_four_model_returns_correct(self):
+        """When cactus returns correct output, should accept it directly."""
+        BENCH_TOOL_CREATE_REMINDER = {
+            "name": "create_reminder",
+            "description": "Create a reminder with a title and time",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Reminder title"},
+                    "time": {"type": "string", "description": "Time for the reminder (e.g. 3:00 PM)"},
+                },
+                "required": ["title", "time"],
+            },
+        }
+        BENCH_TOOLS = [TOOL_GET_WEATHER, TOOL_SEND_MESSAGE, BENCH_TOOL_CREATE_REMINDER, TOOL_SET_ALARM]
+
+        user_text = "Remind me to call the dentist at 2:00 PM."
+
+        # Model returns CORRECT output
+        correct_output = json.dumps({
+            "function_calls": [
+                {"name": "create_reminder", "arguments": {"title": "call the dentist", "time": "2:00 PM"}}
+            ],
+            "confidence": 0.9,
+            "total_time_ms": 50
+        })
+
+        with patch("main.cactus_complete", return_value=correct_output):
+            result = generate_hybrid(
+                [{"role": "user", "content": user_text}],
+                BENCH_TOOLS
+            )
+
+        call = result["function_calls"][0]
+        self.assertEqual(call["name"], "create_reminder")
+        self.assertEqual(call["arguments"]["title"], "call the dentist")
         self.assertEqual(call["arguments"]["time"], "2:00 PM")
         self.assertEqual(result.get("source"), "on-device")
 
