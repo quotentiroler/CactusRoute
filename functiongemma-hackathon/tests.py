@@ -2245,6 +2245,131 @@ class TestFailingBenchmarkCases(unittest.TestCase):
         self.assertIn("jazz", song.lower(), f"Song '{song}' should contain jazz")
 
 
+class TestBenchmarkExactMatch(unittest.TestCase):
+    """STRICT tests: extraction must produce EXACTLY what benchmark expects."""
+
+    def test_reminder_meeting_EXACT(self):
+        """EXACT: reminder_meeting expects title='meeting', time='3:00 PM'"""
+        text = "Remind me about the meeting at 3:00 PM."
+        calls = build_calls_from_text(text, [TOOL_CREATE_REMINDER])
+        
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["name"], "create_reminder")
+        self.assertEqual(calls[0]["arguments"]["title"], "meeting", 
+                        f"EXACT mismatch: got '{calls[0]['arguments'].get('title')}'")
+        self.assertEqual(calls[0]["arguments"]["time"], "3:00 PM",
+                        f"EXACT mismatch: got '{calls[0]['arguments'].get('time')}'")
+
+    def test_reminder_among_four_EXACT(self):
+        """EXACT: reminder_among_four expects title='call the dentist', time='2:00 PM'"""
+        text = "Remind me to call the dentist at 2:00 PM."
+        tools = [TOOL_GET_WEATHER, TOOL_SEND_MESSAGE, TOOL_CREATE_REMINDER, TOOL_SET_ALARM]
+        calls = build_calls_from_text(text, tools)
+        
+        reminder_calls = [c for c in calls if c["name"] == "create_reminder"]
+        self.assertEqual(len(reminder_calls), 1, f"Expected 1 reminder, got {calls}")
+        self.assertEqual(reminder_calls[0]["arguments"]["title"], "call the dentist",
+                        f"EXACT mismatch: got '{reminder_calls[0]['arguments'].get('title')}'")
+        self.assertEqual(reminder_calls[0]["arguments"]["time"], "2:00 PM",
+                        f"EXACT mismatch: got '{reminder_calls[0]['arguments'].get('time')}'")
+
+    def test_timer_among_three_EXACT(self):
+        """EXACT: timer_among_three expects minutes=10"""
+        text = "Set a timer for 10 minutes."
+        tools = [TOOL_SET_ALARM, TOOL_SET_TIMER, TOOL_PLAY_MUSIC]
+        calls = build_calls_from_text(text, tools)
+        
+        timer_calls = [c for c in calls if c["name"] == "set_timer"]
+        self.assertEqual(len(timer_calls), 1, f"Expected 1 timer, got {calls}")
+        self.assertEqual(timer_calls[0]["arguments"]["minutes"], 10,
+                        f"EXACT mismatch: got {timer_calls[0]['arguments'].get('minutes')}")
+
+    def test_music_among_three_EXACT(self):
+        """EXACT: music_among_three expects song='jazz'"""
+        text = "Play some jazz music."
+        tools = [TOOL_SET_ALARM, TOOL_PLAY_MUSIC, TOOL_GET_WEATHER]
+        calls = build_calls_from_text(text, tools)
+        
+        music_calls = [c for c in calls if c["name"] == "play_music"]
+        self.assertEqual(len(music_calls), 1, f"Expected 1 music, got {calls}")
+        self.assertEqual(music_calls[0]["arguments"]["song"], "jazz",
+                        f"EXACT mismatch: got '{music_calls[0]['arguments'].get('song')}'")
+
+    def test_extract_for_role_title_call_the_dentist(self):
+        """extract_for_role should return 'call the dentist' (NOT strip 'the')"""
+        title = extract_for_role(ROLE_TITLE, "Remind me to call the dentist at 2:00 PM.")
+        self.assertEqual(title, "call the dentist",
+                        f"EXACT mismatch: got '{title}'")
+
+    def test_extract_for_role_title_meeting(self):
+        """extract_for_role should return 'meeting' (strip leading 'the')"""
+        title = extract_for_role(ROLE_TITLE, "Remind me about the meeting at 3:00 PM.")
+        self.assertEqual(title, "meeting",
+                        f"EXACT mismatch: got '{title}'")
+
+    def test_extract_for_role_time_2pm(self):
+        """extract_for_role should return '2:00 PM'"""
+        time_str = extract_for_role(ROLE_TIME_STR, "Remind me to call the dentist at 2:00 PM.")
+        self.assertEqual(time_str, "2:00 PM",
+                        f"EXACT mismatch: got '{time_str}'")
+
+    def test_extract_for_role_time_3pm(self):
+        """extract_for_role should return '3:00 PM'"""
+        time_str = extract_for_role(ROLE_TIME_STR, "Remind me about the meeting at 3:00 PM.")
+        self.assertEqual(time_str, "3:00 PM",
+                        f"EXACT mismatch: got '{time_str}'")
+
+
+class TestSemanticValidationRejectsWrongValues(unittest.TestCase):
+    """Tests that semantic_validate rejects model output when extraction would produce different values."""
+    
+    def test_rejects_wrong_title_in_reminder(self):
+        """Model says 'appointment', should reject since extraction='call the dentist'"""
+        user_text = "Remind me to call the dentist at 2:00 PM."
+        calls = [{"name": "create_reminder", "arguments": {"title": "appointment", "time": "2:00 PM"}}]
+        valid, reason = semantic_validate(calls, [TOOL_CREATE_REMINDER], user_text)
+        self.assertFalse(valid, f"Should reject wrong title, got: {reason}")
+        # Can reject for semantic (word overlap) or extract-mismatch reasons
+        self.assertTrue("semantic" in reason.lower() or "extract-mismatch" in reason.lower(),
+                       f"Unexpected rejection reason: {reason}")
+    
+    def test_accepts_correct_title_in_reminder(self):
+        """Model says 'call the dentist', should accept since matches extraction"""
+        user_text = "Remind me to call the dentist at 2:00 PM."
+        calls = [{"name": "create_reminder", "arguments": {"title": "call the dentist", "time": "2:00 PM"}}]
+        valid, reason = semantic_validate(calls, [TOOL_CREATE_REMINDER], user_text)
+        self.assertTrue(valid, f"Should accept correct title, got: {reason}")
+    
+    def test_rejects_wrong_minutes_in_timer(self):
+        """Model says minutes=5, should reject since extraction=10"""
+        user_text = "Set a timer for 10 minutes."
+        calls = [{"name": "set_timer", "arguments": {"minutes": 5}}]
+        valid, reason = semantic_validate(calls, [TOOL_SET_TIMER], user_text)
+        self.assertFalse(valid, f"Should reject wrong minutes, got: {reason}")
+        self.assertIn("extract-mismatch", reason.lower() if reason else "")
+    
+    def test_accepts_correct_minutes_in_timer(self):
+        """Model says minutes=10, should accept since matches extraction"""
+        user_text = "Set a timer for 10 minutes."
+        calls = [{"name": "set_timer", "arguments": {"minutes": 10}}]
+        valid, reason = semantic_validate(calls, [TOOL_SET_TIMER], user_text)
+        self.assertTrue(valid, f"Should accept correct minutes, got: {reason}")
+    
+    def test_rejects_wrong_song_in_music(self):
+        """Model says 'pop', should reject since extraction='jazz'"""
+        user_text = "Play some jazz music."
+        calls = [{"name": "play_music", "arguments": {"song": "pop"}}]
+        valid, reason = semantic_validate(calls, [TOOL_PLAY_MUSIC], user_text)
+        self.assertFalse(valid, f"Should reject wrong song, got: {reason}")
+    
+    def test_accepts_correct_song_in_music(self):
+        """Model says 'jazz', should accept since matches extraction"""
+        user_text = "Play some jazz music."
+        calls = [{"name": "play_music", "arguments": {"song": "jazz"}}]
+        valid, reason = semantic_validate(calls, [TOOL_PLAY_MUSIC], user_text)
+        self.assertTrue(valid, f"Should accept correct song, got: {reason}")
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Run
 # ═══════════════════════════════════════════════════════════════════════════════
