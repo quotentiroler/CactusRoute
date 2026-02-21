@@ -209,6 +209,9 @@ uv run python submit.py --team "YourTeamName" --location "YourCity"
 | 11 | **`tool_rag_top_k=0`** — use ALL tools | TinyAgent (Tool RAG) | Default=2 misses needed tools |
 | 12 | **Dynamic system prompt** — multi-call instruction for hard queries | — | "Call ALL relevant tools" |
 | 13 | **Cloud model fix** — `gemini-2.5-flash` | — | Baseline's `gemini-2.0-flash` is deprecated |
+| 14 | **Source tag normalization** — all on-device paths report `"on-device"` | — | Benchmark checks `source == "on-device"` exactly; `"on-device (retry)"` etc. were scored as cloud |
+
+> **Note:** All on-device execution paths (direct, retry, extracted) set `source = "on-device"` for benchmark compatibility. The fine-grained detail (e.g. `"on-device (retry)"`, `"on-device (extracted)"`) is preserved in `result["_detail"]` and shown in benchmark/demo display output. To restore verbose source tags, change `"source"` assignments back to the `"_detail"` values in `generate_hybrid()` and `_try_extraction_then_cloud()`.
 
 ## Test Suite
 

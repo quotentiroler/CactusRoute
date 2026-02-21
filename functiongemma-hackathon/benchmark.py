@@ -407,13 +407,15 @@ def run_benchmark(benchmarks=None):
         result = generate_hybrid(case["messages"], case["tools"])
         f1 = compute_f1(result["function_calls"], case["expected_calls"])
         source = result.get("source", "unknown")
-        print(f"F1={f1:.2f} | {result['total_time_ms']:.0f}ms | {source}")
+        detail = result.get("_detail", source)  # fine-grained label for display
+        print(f"F1={f1:.2f} | {result['total_time_ms']:.0f}ms | {detail}")
         results.append({
             "name": case["name"],
             "difficulty": case["difficulty"],
             "total_time_ms": result["total_time_ms"],
             "f1": f1,
             "source": source,
+            "detail": detail,
             "predicted": result["function_calls"],
             "expected": case["expected_calls"],
         })
@@ -422,7 +424,7 @@ def run_benchmark(benchmarks=None):
     print(f"  {'#':>2} | {'Difficulty':<10} | {'Name':<28} | {'Time (ms)':>10} | {'F1':>5} | Source")
     print(f"  {'--':>2}-+-{'-'*10}-+-{'-'*28}-+-{'-'*10}-+-{'-'*5}-+-{'-'*20}")
     for i, r in enumerate(results, 1):
-        print(f"  {i:>2} | {r['difficulty']:<10} | {r['name']:<28} | {r['total_time_ms']:>10.2f} | {r['f1']:>5.2f} | {r['source']}")
+        print(f"  {i:>2} | {r['difficulty']:<10} | {r['name']:<28} | {r['total_time_ms']:>10.2f} | {r['f1']:>5.2f} | {r['detail']}")
 
     print(f"\n--- Summary ---")
     for difficulty in ["easy", "medium", "hard"]:

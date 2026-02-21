@@ -850,7 +850,8 @@ def generate_hybrid(messages, tools):
             if iok:
                 retry["function_calls"] = retry_repaired
                 retry["total_time_ms"] = local_time + retry_time
-                retry["source"] = "on-device (retry)"
+                retry["source"] = "on-device"  # must match benchmark check exactly
+                retry["_detail"] = "on-device (retry)"
                 retry["difficulty"] = difficulty
                 return retry
 
@@ -896,7 +897,8 @@ def _try_extraction_then_cloud(messages, tools, local, difficulty, user_text, re
                 "function_calls": det_calls,
                 "total_time_ms": local_time,
                 "confidence": 0.5,
-                "source": "on-device (extracted)",
+                "source": "on-device",  # must match benchmark check exactly
+                "_detail": "on-device (extracted)",
                 "difficulty": difficulty,
             }
 
@@ -930,7 +932,8 @@ def print_result(label, result):
     print(f"  {label}")
     print(f"{'═' * 60}")
     if "source" in result:
-        print(f"  Source:     {result['source']}")
+        detail = result.get("_detail", result["source"])
+        print(f"  Source:     {detail}")
     if "difficulty" in result:
         print(f"  Difficulty: {result['difficulty']}")
     if "confidence" in result:

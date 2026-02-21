@@ -908,8 +908,8 @@ class TestRoutingDecisions(unittest.TestCase):
         msg = [{"role": "user", "content": "What's the weather in Paris?"}]
         result = generate_hybrid(msg, [TOOL_GET_WEATHER])
 
-        self.assertIn("on-device", result["source"])
-        self.assertIn("extracted", result["source"])
+        self.assertEqual(result["source"], "on-device")
+        self.assertIn("extracted", result.get("_detail", ""))
         mock_cloud.assert_not_called()
 
     @patch("main.generate_cloud")
@@ -923,8 +923,8 @@ class TestRoutingDecisions(unittest.TestCase):
         msg = [{"role": "user", "content": "Set a timer for 5 minutes."}]
         result = generate_hybrid(msg, [TOOL_SET_TIMER])
 
-        self.assertIn("on-device", result["source"])
-        self.assertIn("extracted", result["source"])
+        self.assertEqual(result["source"], "on-device")
+        self.assertIn("extracted", result.get("_detail", ""))
         mock_cloud.assert_not_called()
 
     # ── ON-DEVICE via AUGMENTATION: missing call filled by extraction ──
@@ -1235,8 +1235,8 @@ class TestSignalPriority(unittest.TestCase):
         msg = [{"role": "user", "content": "Weather in Paris?"}]
         result = generate_hybrid(msg, [TOOL_GET_WEATHER])
 
-        self.assertIn("on-device", result["source"])
-        self.assertIn("extracted", result["source"])
+        self.assertEqual(result["source"], "on-device")
+        self.assertIn("extracted", result.get("_detail", ""))
         mock_cloud.assert_not_called()
 
 
@@ -2160,8 +2160,8 @@ class TestRoutingPipelineIntegration(unittest.TestCase):
         msg = [{"role": "user", "content": "What's the weather in Paris?"}]
         result = generate_hybrid(msg, [TOOL_GET_WEATHER])
 
-        self.assertIn("on-device", result["source"])
-        self.assertIn("extracted", result["source"])
+        self.assertEqual(result["source"], "on-device")
+        self.assertIn("extracted", result.get("_detail", ""))
         expected = [{"name": "get_weather", "arguments": {"location": "Paris"}}]
         f1 = _compute_f1(result["function_calls"], expected)
         self.assertEqual(f1, 1.0)
