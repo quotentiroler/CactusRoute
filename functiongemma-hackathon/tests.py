@@ -2369,6 +2369,30 @@ class TestSemanticValidationRejectsWrongValues(unittest.TestCase):
         valid, reason = semantic_validate(calls, [TOOL_PLAY_MUSIC], user_text)
         self.assertTrue(valid, f"Should accept correct song, got: {reason}")
 
+    def test_rejects_partial_title_dentist_only(self):
+        """Model says 'dentist', should reject since extraction='call the dentist'"""
+        user_text = "Remind me to call the dentist at 2:00 PM."
+        calls = [{"name": "create_reminder", "arguments": {"title": "dentist", "time": "2:00 PM"}}]
+        valid, reason = semantic_validate(calls, [TOOL_CREATE_REMINDER], user_text)
+        self.assertFalse(valid, f"Should reject partial title 'dentist', got: {reason}")
+        self.assertIn("extract-mismatch", reason.lower())
+
+    def test_rejects_partial_title_the_dentist(self):
+        """Model says 'the dentist', should reject since extraction='call the dentist'"""
+        user_text = "Remind me to call the dentist at 2:00 PM."
+        calls = [{"name": "create_reminder", "arguments": {"title": "the dentist", "time": "2:00 PM"}}]
+        valid, reason = semantic_validate(calls, [TOOL_CREATE_REMINDER], user_text)
+        self.assertFalse(valid, f"Should reject partial title 'the dentist', got: {reason}")
+        self.assertIn("extract-mismatch", reason.lower())
+
+    def test_rejects_partial_title_call_dentist(self):
+        """Model says 'call dentist', should reject since extraction='call the dentist'"""
+        user_text = "Remind me to call the dentist at 2:00 PM."
+        calls = [{"name": "create_reminder", "arguments": {"title": "call dentist", "time": "2:00 PM"}}]
+        valid, reason = semantic_validate(calls, [TOOL_CREATE_REMINDER], user_text)
+        self.assertFalse(valid, f"Should reject partial title 'call dentist', got: {reason}")
+        self.assertIn("extract-mismatch", reason.lower())
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Run
