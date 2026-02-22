@@ -26,8 +26,6 @@ sys.path.insert(0, "cactus/python/src")
 
 import json, os, time, re, atexit
 from cactus import cactus_init, cactus_complete, cactus_destroy
-from google import genai
-from google.genai import types
 
 try:
     from cactus import cactus_reset
@@ -79,6 +77,7 @@ def _get_gemini():
     """Lazy-load Gemini API client exactly once."""
     global _gemini_client
     if _gemini_client is None:
+        from google import genai
         _gemini_client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
     return _gemini_client
 
@@ -773,6 +772,7 @@ def generate_cactus(messages, tools, difficulty="medium", prompt_idx=0):
 
 def generate_cloud(messages, tools):
     """Run function calling via Gemini Cloud API with type coercion."""
+    from google.genai import types
     client = _get_gemini()
 
     gemini_tools = [
