@@ -1,5 +1,7 @@
 # CactusRoute — 7-Layer Adaptive Edge/Cloud Hybrid Router
 
+## 🏆 1st Place — Google DeepMind x Cactus Compute Global Hackathon (Feb 2026)
+
 > **FunctionGemma 270M (on-device) ↔ Gemini 2.5 Flash (cloud)**  
 > Schema-driven adaptive routing for function calling — backed by 8 arXiv papers
 
