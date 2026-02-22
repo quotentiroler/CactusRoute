@@ -6,12 +6,6 @@
       "type": "file",
       "path": "./cactus",
       "pathType": "relative"
-    },
-    {
-      "name": "hackathon",
-      "type": "file",
-      "path": "./functiongemma-hackathon",
-      "pathType": "relative"
     }
   ]
 }
