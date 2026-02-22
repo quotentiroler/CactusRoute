@@ -1,5 +1,11 @@
 <img src="assets/banner.png" alt="Logo" style="border-radius: 30px; width: 100%;">
 
+## 🏆 1st Place — Google DeepMind x Cactus Compute Global Hackathon
+
+**CactusRoute** won 1st place at the [AI Tinkerers](https://aitinkerers.com) Google DeepMind x Cactus Compute Global Hackathon (February 2026). Our 7-layer adaptive hybrid router achieved **0.982 F1** with **100% on-device ratio** — while genuinely using FunctionGemma for inference on every query.
+
+---
+
 ## Context
 - Cactus runs Google DeepMind's FunctionGemma at up to 3000 toks/sec prefill speed on M4 Macs.
 - While decode speed reaches 200 tokens/sec, all without GPU, to remain energy-efficient. 
