@@ -87,9 +87,9 @@ Estimate difficulty from the raw query + tool definitions:
 
 | Difficulty | Confidence Threshold | Rationale |
 |------------|---------------------|-----------|
-| Easy (1 tool) | 0.50 | Almost always correct, maximize on-device ratio |
-| Medium (2-3 tools) | 0.65 | Need moderate confidence for tool selection |
-| Hard (4+ tools, multi-call) | 0.80 | High bar before trusting complex multi-tool output |
+| Easy (1 tool) | 0.25 | Almost always correct, maximize on-device ratio |
+| Medium (2-3 tools) | 0.45 | Need moderate confidence for tool selection |
+| Hard (4+ tools, multi-call) | 0.60 | High bar before trusting complex multi-tool output |
 
 ### Phase 3: Validation & Fallback
 - If confidence >= threshold → **return on-device result** (fast, free)
@@ -162,6 +162,7 @@ def generate_hybrid(messages, tools, confidence_threshold=0.99):
 - [x] tool_rag_top_k=0 to consider ALL tools (default 2 misses tools)
 - [x] Build rich interactive demo (demo.py) with scenarios + dashboard
 - [x] Voice-to-action mode via Cactus Whisper integration
-- [ ] Run benchmark on Mac and iterate on thresholds
-- [ ] Tune thresholds based on actual confidence distributions
-- [ ] Submit to leaderboard
+- [x] Run benchmark on Mac and iterate on thresholds
+- [x] Tune thresholds based on actual confidence distributions
+- [x] Submit to leaderboard
+- [x] **WON 1ST PLACE** 🏆

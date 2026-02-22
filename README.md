@@ -139,11 +139,11 @@ cactus-hack/
 ├── STRATEGY.md                ← Detailed strategy with research findings
 │
 ├── functiongemma-hackathon/   ← Hackathon submission
-│   ├── main.py                ← 7-layer adaptive router (~1010 lines)
+│   ├── main.py                ← 7-layer adaptive router (~1200 lines)
 │   ├── benchmark.py           ← Official benchmark (30 cases: 10 easy/10 med/10 hard)
 │   ├── submit.py              ← Leaderboard submission script
 │   ├── demo.py                ← Rich interactive demo (4 modes)
-│   └── tests.py               ← 206 unit tests, 23 test classes (any platform)
+│   └── tests.py               ← 239 unit tests, 27 test classes (any platform)
 │
 ├── deep-research-mcp-server/  ← Deep research pipeline (Gemini-powered)
 │   ├── src/                   ← TypeScript source
@@ -217,20 +217,20 @@ uv run python submit.py --team "YourTeamName" --location "YourCity"
 
 ## Test Suite
 
-206 tests across 23 test classes — runs on any platform, no Cactus or API keys needed:
+239 tests across 27 test classes — runs on any platform, no Cactus or API keys needed:
 
 | Test Class | Tests | What it covers |
 |-----------|-------|----------------|
-| `TestEstimateDifficulty` | 9 | Tool count + multi-intent classification |
-| `TestCountExpectedIntents` | 7 | NLP-based intent counting |
+| `TestEstimateDifficulty` | 12 | Tool count + multi-intent classification |
+| `TestCountExpectedIntents` | 5 | NLP-based intent counting |
 | `TestCoerceArgTypes` | 8 | Schema-driven type coercion |
 | `TestValidateOutput` | 8 | Structural validation (names + params) |
 | `TestInferParamRole` | 12 | Semantic role inference from schema |
-| `TestExtractForRole` | 23 | Regex extraction for all 11 roles |
+| `TestExtractForRole` | 25 | Regex extraction for all 11 roles |
 | `TestSemanticValidate` | 6 | Word-overlap + range validation |
 | `TestRepairOutput` | 7 | AM/PM, negatives, semantic repair |
 | `TestBuildCallsFromText` | 9 | Deterministic extraction pipeline |
-| `TestRoutingDecisions` | 21 | End-to-end routing with thresholds |
+| `TestRoutingDecisions` | 19 | End-to-end routing with thresholds |
 | `TestThresholdBoundaries` | 5 | Exact boundary conditions for thresholds |
 | `TestSignalPriority` | 3 | Handoff checked before confidence |
 | `TestBenchmarkCompatibility` | 2 | F1 normalization + call matching |
@@ -244,6 +244,10 @@ uv run python submit.py --team "YourTeamName" --location "YourCity"
 | `TestCrossEntityConfusion` | 4 | Entity isolation across tools/params |
 | `TestSemanticEdgeCases` | 9 | Hallucination rejection + edge cases |
 | `TestRoutingPipelineIntegration` | 5 | Full pipeline F1 with realistic model failures |
+| `TestFailingBenchmarkCases` | 4 | Regression tests for specific benchmark failures |
+| `TestBenchmarkExactMatch` | 8 | Exact-match validation for benchmark cases |
+| `TestSemanticValidationRejectsWrongValues` | 16 | Semantic rejection of hallucinated values |
+| `TestFullPipelineFallback` | 5 | End-to-end fallback chain validation |
 
 ## Research
 

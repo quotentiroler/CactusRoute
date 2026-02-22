@@ -24,13 +24,22 @@ Research basis:
 import sys
 sys.path.insert(0, "cactus/python/src")
 
-import json, os, time, re, atexit
+import atexit
+import json
+import logging
+import os
+import re
+import time
+
 from cactus import cactus_init, cactus_complete, cactus_destroy
 
 try:
     from cactus import cactus_reset
 except ImportError:
+    logging.debug("cactus_reset not available in this SDK version")
     cactus_reset = None
+
+log = logging.getLogger(__name__)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -158,14 +167,15 @@ def count_expected_intents(messages):
 # "10" (str) ≠ 10 (int) in Python, so integer params must be properly typed.
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def coerce_arg_types(function_calls, tools):
+def coerce_arg_types(function_calls, tools, tool_map=None):
     """Coerce argument types to match tool schema definitions."""
-    schema_map = {
-        t["name"]: t["parameters"].get("properties", {})
-        for t in tools
-    }
+    if tool_map is None:
+        tool_map = _build_tool_map(tools)
     for call in function_calls:
-        props = schema_map.get(call.get("name"), {})
+        tool_def = tool_map.get(call.get("name"))
+        if tool_def is None:
+            continue
+        props = tool_def["parameters"].get("properties", {})
         args = call.get("arguments", {})
         for key, val in list(args.items()):
             if key not in props:
@@ -184,7 +194,46 @@ def coerce_arg_types(function_calls, tools):
     return function_calls
 
 
-def validate_output(function_calls, tools):
+def _build_tool_map(tools):
+    """Build name→tool lookup dict. Reused across validate/semantic/repair."""
+    return {t["name"]: t for t in tools}
+
+
+def _extract_text_words(user_text):
+    """Extract content words from user text, excluding stop words."""
+    return set(re.findall(r'[a-z]{3,}', user_text.lower())) - _STOP_WORDS
+
+
+def _validate_calls(calls, tools, user_text, tool_map=None, text_words=None):
+    """Run the full coerce → structural → semantic validation pipeline.
+
+    Returns (is_valid: bool, reason: str).
+    """
+    coerce_arg_types(calls, tools, tool_map)
+    sv, reason = validate_output(calls, tools, tool_map)
+    if not sv:
+        return False, reason
+    sem, sem_reason = semantic_validate(calls, tools, user_text, tool_map,
+                                        text_words)
+    if not sem:
+        return False, sem_reason
+    return True, "ok"
+
+
+def _make_ondevice_result(calls, time_ms, difficulty, detail,
+                          confidence=0.5):
+    """Build a standardized on-device result dict."""
+    return {
+        "function_calls": calls,
+        "total_time_ms": time_ms,
+        "confidence": confidence,
+        "source": "on-device",
+        "_detail": detail,
+        "difficulty": difficulty,
+    }
+
+
+def validate_output(function_calls, tools, tool_map=None):
     """
     Validate structural correctness of function calls.
     Returns (is_valid: bool, reason: str).
@@ -192,12 +241,12 @@ def validate_output(function_calls, tools):
     if not function_calls:
         return False, "empty"
 
-    tool_names = {t["name"] for t in tools}
-    tool_map = {t["name"]: t for t in tools}
+    if tool_map is None:
+        tool_map = _build_tool_map(tools)
 
     for call in function_calls:
         name = call.get("name", "")
-        if name not in tool_names:
+        if name not in tool_map:
             return False, f"unknown-tool:{name}"
         required = tool_map[name]["parameters"].get("required", [])
         args = call.get("arguments", {})
@@ -427,11 +476,13 @@ _STOP_WORDS = frozenset({
 })
 
 
-def semantic_validate(calls, tools, user_text):
+def semantic_validate(calls, tools, user_text, tool_map=None,
+                      text_words=None):
     """Validate argument values against user text. Returns (ok, reason)."""
-    text_lower = user_text.lower()
-    text_words = set(re.findall(r'[a-z]{3,}', text_lower)) - _STOP_WORDS
-    tool_map = {t["name"]: t for t in tools}
+    if text_words is None:
+        text_words = _extract_text_words(user_text)
+    if tool_map is None:
+        tool_map = _build_tool_map(tools)
 
     for call in calls:
         name = call.get("name", "")
@@ -504,11 +555,14 @@ def semantic_validate(calls, tools, user_text):
 # ratio while maintaining F1.
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def repair_output(calls, tools, user_text):
+def repair_output(calls, tools, user_text, tool_map=None,
+                  text_words=None):
     """Repair model output in-place using schema-driven text extraction."""
-    tool_map = {t["name"]: t for t in tools}
+    if tool_map is None:
+        tool_map = _build_tool_map(tools)
+    if text_words is None:
+        text_words = _extract_text_words(user_text)
     text_lower = user_text.lower()
-    text_words = set(re.findall(r'[a-z]{3,}', text_lower)) - _STOP_WORDS
     repaired = []
 
     for call in calls:
@@ -824,20 +878,94 @@ def generate_cloud(messages, tools):
 # ═══════════════════════════════════════════════════════════════════════════════
 # Adaptive Hybrid Router — 7-Layer Decision Framework
 #
-# Enhanced decision flow (competitive analysis → most sophisticated approach):
-#   1. Pre-flight difficulty estimation (zero cost)
-#   2. Local execution via FunctionGemma (~50-100ms)
-#   3. Schema-driven output repair: AM/PM, type coercion, semantic fixes
-#   4. Multi-gate validation: structural + semantic + intent coverage
-#   5. Accept if all gates pass and confidence ≥ adaptive threshold
-#   6. Retry with alternate prompt (cheap second chance on-device)
-#   7. Deterministic extraction fallback (schema-driven text parsing)
-#   8. Cloud fallback (absolute last resort)
+# Layers (conceptual) map to implementation steps:
+#   Layer 1: Pre-flight difficulty estimation (zero cost)
+#   Layer 2: Local execution + handoff signals (steps 1-3)
+#   Layer 3: Schema-driven output repair (step 4)
+#   Layer 4: Multi-gate validation: structural + semantic + intent (steps 5-6)
+#   Layer 5: Adaptive confidence thresholds (step 7)
+#   Layer 6: Retry with alternate prompt (step 8)
+#   Layer 7: Deterministic extraction fallback → cloud last resort (step 9)
 #
 # Key insight: maximize on-device ratio by REPAIRING local output before
 # deciding to fall back. Most competitors dump to cloud on any issue — we
 # fix it locally first, keeping both F1 and on-device ratio high.
 # ═══════════════════════════════════════════════════════════════════════════════
+
+def _extraction_cross_check(repaired, tools, tool_map, user_text,
+                            expected_intents, local_time, difficulty):
+    """
+    Verify model chose the same tool as deterministic extraction.
+    Returns an override result dict, or None if model's choice stands.
+    """
+    det_check = build_calls_from_text(user_text, tools, max_calls=expected_intents)
+    if not det_check:
+        return None
+
+    model_tools = {c["name"] for c in repaired}
+    extract_tools = {c["name"] for c in det_check}
+    if model_tools == extract_tools:
+        return None
+
+    # Extraction disagrees — compare relevance of top picks
+    best_extract = det_check[0]
+    extract_tool = tool_map.get(best_extract["name"])
+    if extract_tool is None:
+        return None
+    best_extract_rel = _tool_relevance(extract_tool, user_text)
+    model_rel = max(
+        (_tool_relevance(t, user_text) for t in tools if t["name"] in model_tools),
+        default=0,
+    )
+    if best_extract_rel <= model_rel:
+        return None
+
+    # Extraction picked more relevant tool — validate before overriding
+    valid, _ = _validate_calls(det_check, tools, user_text, tool_map)
+    if valid:
+        return _make_ondevice_result(
+            det_check, local_time, difficulty, "on-device (extract-override)",
+        )
+    return None
+
+
+def _retry_on_device(messages, tools, tool_map, user_text, difficulty,
+                     expected_intents, local_time):
+    """
+    Retry local execution with an alternate prompt.
+    Returns a result dict on success, or None if retry fails validation.
+    """
+    retry = generate_cactus(messages, tools, difficulty=difficulty, prompt_idx=1)
+    retry_time = retry.get("total_time_ms", 0)
+
+    if not retry.get("success", True) or retry.get("cloud_handoff"):
+        return None
+
+    retry_repaired = repair_output(retry["function_calls"], tools, user_text,
+                                   tool_map)
+    rv, _ = _validate_calls(retry_repaired, tools, user_text, tool_map)
+    if not rv:
+        return None
+
+    iok = True
+    if difficulty == "hard":
+        if len(retry_repaired) < expected_intents:
+            aug = _augment_calls(retry_repaired, tools, user_text)
+            if len(aug) >= expected_intents:
+                retry_repaired = aug
+            else:
+                iok = False
+
+    if not iok:
+        return None
+
+    retry["function_calls"] = retry_repaired
+    retry["total_time_ms"] = local_time + retry_time
+    retry["source"] = "on-device"  # must match benchmark check exactly
+    retry["_detail"] = "on-device (retry)"
+    retry["difficulty"] = difficulty
+    return retry
+
 
 def generate_hybrid(messages, tools):
     """
@@ -849,6 +977,8 @@ def generate_hybrid(messages, tools):
     difficulty = estimate_difficulty(messages, tools)
     threshold = THRESHOLDS[difficulty]
     user_text = " ".join(m["content"] for m in messages if m["role"] == "user")
+    expected_intents = count_expected_intents(messages)
+    tool_map = _build_tool_map(tools)
 
     # ── Step 1: Local execution ──
     local = generate_cactus(messages, tools, difficulty=difficulty)
@@ -867,65 +997,38 @@ def generate_hybrid(messages, tools):
         )
 
     # ── Step 4: Repair local output (AM/PM, negatives, semantic) ──
-    repaired = repair_output(local["function_calls"], tools, user_text)
-    coerce_arg_types(repaired, tools)
+    text_words = _extract_text_words(user_text)
+    repaired = repair_output(local["function_calls"], tools, user_text,
+                             tool_map, text_words)
+    coerce_arg_types(repaired, tools, tool_map)
     local["function_calls"] = repaired
 
     # ── Step 5: Multi-gate validation ──
-    is_valid, reason = validate_output(repaired, tools)
+    is_valid, reason = validate_output(repaired, tools, tool_map)
     sem_valid, sem_reason = (True, "ok")
     if is_valid:
-        sem_valid, sem_reason = semantic_validate(repaired, tools, user_text)
+        sem_valid, sem_reason = semantic_validate(repaired, tools, user_text,
+                                                  tool_map, text_words)
 
-    # ── Step 6: Intent coverage for hard queries ──
+    # ── Step 6a: Intent coverage for hard queries ──
     intent_ok = True
     if is_valid and sem_valid and difficulty == "hard":
-        expected = count_expected_intents(messages)
-        actual = len(repaired)
-        if actual < expected:
+        if len(repaired) < expected_intents:
             augmented = _augment_calls(repaired, tools, user_text)
-            if len(augmented) >= expected:
+            if len(augmented) >= expected_intents:
                 coerce_arg_types(augmented, tools)
                 local["function_calls"] = augmented
             else:
                 intent_ok = False
 
     # ── Step 6b: Extraction cross-check ──
-    # If model passes validation, verify it chose the same tool as extraction.
-    # This catches cases where model picks wrong tool (e.g. set_alarm instead
-    # of create_reminder) which would pass validation but give F1=0.00.
     if is_valid and sem_valid and intent_ok:
-        expected_intents = count_expected_intents(messages)
-        det_check = build_calls_from_text(user_text, tools, max_calls=expected_intents)
-        if det_check:
-            model_tools = {c["name"] for c in repaired}
-            extract_tools = {c["name"] for c in det_check}
-            if model_tools != extract_tools:
-                # Extraction disagrees with model on tool choice
-                # Use relevance of the TOP extraction pick vs model pick
-                best_extract = det_check[0]
-                best_extract_rel = _tool_relevance(
-                    next(t for t in tools if t["name"] == best_extract["name"]), user_text
-                )
-                model_rel = max(
-                    (_tool_relevance(t, user_text) for t in tools if t["name"] in model_tools),
-                    default=0,
-                )
-                if best_extract_rel > model_rel:
-                    # Extraction picked more relevant tool — override model
-                    coerce_arg_types(det_check, tools)
-                    dv, _ = validate_output(det_check, tools)
-                    if dv:
-                        ds, _ = semantic_validate(det_check, tools, user_text)
-                        if ds:
-                            return {
-                                "function_calls": det_check,
-                                "total_time_ms": local_time,
-                                "confidence": 0.5,
-                                "source": "on-device",
-                                "_detail": "on-device (extract-override)",
-                                "difficulty": difficulty,
-                            }
+        override = _extraction_cross_check(
+            repaired, tools, tool_map, user_text,
+            expected_intents, local_time, difficulty,
+        )
+        if override is not None:
+            return override
 
     # ── Step 7: Accept if all gates pass and confident ──
     if is_valid and sem_valid and intent_ok and local["confidence"] >= threshold:
@@ -934,35 +1037,12 @@ def generate_hybrid(messages, tools):
         return local
 
     # ── Step 8: Retry with alternate prompt ──
-    retry = generate_cactus(messages, tools, difficulty=difficulty, prompt_idx=1)
-    retry_time = retry.get("total_time_ms", 0)
-
-    if retry.get("success", True) and not retry.get("cloud_handoff"):
-        retry_repaired = repair_output(retry["function_calls"], tools, user_text)
-        coerce_arg_types(retry_repaired, tools)
-        rv, _ = validate_output(retry_repaired, tools)
-        sv = True
-        if rv:
-            sv, _ = semantic_validate(retry_repaired, tools, user_text)
-
-        if rv and sv:
-            iok = True
-            if difficulty == "hard":
-                expected = count_expected_intents(messages)
-                if len(retry_repaired) < expected:
-                    aug = _augment_calls(retry_repaired, tools, user_text)
-                    if len(aug) >= expected:
-                        retry_repaired = aug
-                    else:
-                        iok = False
-
-            if iok:
-                retry["function_calls"] = retry_repaired
-                retry["total_time_ms"] = local_time + retry_time
-                retry["source"] = "on-device"  # must match benchmark check exactly
-                retry["_detail"] = "on-device (retry)"
-                retry["difficulty"] = difficulty
-                return retry
+    retry_result = _retry_on_device(
+        messages, tools, tool_map, user_text, difficulty,
+        expected_intents, local_time,
+    )
+    if retry_result is not None:
+        return retry_result
 
     # ── Step 9: Deterministic extraction fallback ──
     return _try_extraction_then_cloud(
@@ -982,7 +1062,6 @@ def _augment_calls(existing_calls, tools, user_text):
 def _try_extraction_then_cloud(messages, tools, local, difficulty, user_text, reason):
     """Try deterministic extraction; fall to cloud only if extraction also fails."""
     local_time = local.get("total_time_ms", 0)
-
     expected_intents = count_expected_intents(messages)
 
     if difficulty == "hard":
@@ -992,27 +1071,17 @@ def _try_extraction_then_cloud(messages, tools, local, difficulty, user_text, re
         det_calls = build_calls_from_text(user_text, tools, max_calls=expected_intents)
 
     if det_calls:
-        coerce_arg_types(det_calls, tools)
-        dv, _ = validate_output(det_calls, tools)
-        ds = True
-        if dv:
-            ds, _ = semantic_validate(det_calls, tools, user_text)
+        valid, _ = _validate_calls(det_calls, tools, user_text)
 
         intent_ok = True
-        if difficulty == "hard" and dv and ds:
-            expected = count_expected_intents(messages)
-            if len(det_calls) < expected:
+        if difficulty == "hard" and valid:
+            if len(det_calls) < expected_intents:
                 intent_ok = False
 
-        if dv and ds and intent_ok:
-            return {
-                "function_calls": det_calls,
-                "total_time_ms": local_time,
-                "confidence": 0.5,
-                "source": "on-device",  # must match benchmark check exactly
-                "_detail": "on-device (extracted)",
-                "difficulty": difficulty,
-            }
+        if valid and intent_ok:
+            return _make_ondevice_result(
+                det_calls, local_time, difficulty, "on-device (extracted)",
+            )
 
     return _fallback(messages, tools, local, difficulty, reason)
 
@@ -1022,6 +1091,7 @@ def _fallback(messages, tools, local, difficulty, reason):
     try:
         cloud = generate_cloud(messages, tools)
     except Exception:
+        log.warning("Cloud fallback failed, returning local result", exc_info=True)
         # Cloud failed — return local anyway (partial credit > zero)
         local["source"] = "on-device"
         local["difficulty"] = difficulty
