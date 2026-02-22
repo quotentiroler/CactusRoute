@@ -2426,6 +2426,29 @@ class TestSemanticValidationRejectsWrongValues(unittest.TestCase):
         valid, reason = semantic_validate(calls, [TOOL_CREATE_REMINDER], user_text)
         self.assertTrue(valid, f"Should accept correct time, got: {reason}")
 
+    # ── Multi-time extraction tests (alarm_and_reminder regression) ──
+    def test_accepts_second_time_in_multi_intent(self):
+        """For 'alarm at 6:45 AM and remind at 7:00 AM', time='7:00 AM' should be accepted."""
+        user_text = "Set an alarm for 6:45 AM and remind me to take medicine at 7:00 AM."
+        calls = [{"name": "create_reminder", "arguments": {"title": "take medicine", "time": "7:00 AM"}}]
+        valid, reason = semantic_validate(calls, [TOOL_CREATE_REMINDER], user_text)
+        self.assertTrue(valid, f"Should accept second time '7:00 AM', got: {reason}")
+
+    def test_accepts_first_time_in_multi_intent(self):
+        """For 'alarm at 6:45 AM and remind at 7:00 AM', time='6:45 AM' should also be accepted."""
+        user_text = "Set an alarm for 6:45 AM and remind me to take medicine at 7:00 AM."
+        calls = [{"name": "create_reminder", "arguments": {"title": "take medicine", "time": "6:45 AM"}}]
+        valid, reason = semantic_validate(calls, [TOOL_CREATE_REMINDER], user_text)
+        self.assertTrue(valid, f"Should accept first time '6:45 AM', got: {reason}")
+
+    def test_rejects_time_not_in_text_multi_intent(self):
+        """For 'alarm at 6:45 AM and remind at 7:00 AM', time='8:00 AM' should be rejected."""
+        user_text = "Set an alarm for 6:45 AM and remind me to take medicine at 7:00 AM."
+        calls = [{"name": "create_reminder", "arguments": {"title": "take medicine", "time": "8:00 AM"}}]
+        valid, reason = semantic_validate(calls, [TOOL_CREATE_REMINDER], user_text)
+        self.assertFalse(valid, f"Should reject time not in text, got: {reason}")
+        self.assertIn("extract-mismatch", reason.lower())
+
 
 class TestFullPipelineFallback(unittest.TestCase):
     """Test that generate_hybrid falls back to extraction when model returns wrong values."""

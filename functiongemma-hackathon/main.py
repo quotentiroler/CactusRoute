@@ -280,6 +280,17 @@ def infer_param_role(param_name, param_info):
 _TIME_RE = re.compile(r'(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b', re.I)
 _DURATION_RE = re.compile(r'(\d+)\s*(?:minutes?|mins?)\b', re.I)
 
+
+def _extract_all_times(text: str) -> list[str]:
+    """Return all formatted time strings found in *text* (e.g. ['6:45 AM', '7:00 AM'])."""
+    results = []
+    for m in _TIME_RE.finditer(text):
+        hour = int(m.group(1))
+        minute = int(m.group(2) or 0)
+        ampm = m.group(3).upper()
+        results.append(f"{hour}:{minute:02d} {ampm}")
+    return results
+
 # Message content: "saying X" / "that says X" / implicit after "text [Person]"
 _MSG_PATTERNS = [
     re.compile(
@@ -445,13 +456,22 @@ def semantic_validate(calls, tools, user_text):
                 
                 # For extractable string roles, check extraction matches EXACTLY
                 if role in (ROLE_TITLE, ROLE_SONG, ROLE_LOCATION, ROLE_MESSAGE, ROLE_TIME_STR):
-                    extracted = extract_for_role(role, user_text)
-                    if extracted is not None:
-                        ext_norm = extracted.strip().lower()
-                        val_norm = val.strip().lower()
-                        # Require exact match - no partial matching allowed
-                        if ext_norm != val_norm:
-                            return False, f"extract-mismatch:{pname}='{val}' vs extracted='{extracted}'"
+                    if role == ROLE_TIME_STR:
+                        # For time strings, multiple times may exist in text (multi-intent).
+                        # Accept if value matches ANY time found in text.
+                        all_times = _extract_all_times(user_text)
+                        if all_times:
+                            val_norm = val.strip().lower()
+                            if val_norm not in {t.strip().lower() for t in all_times}:
+                                return False, f"extract-mismatch:{pname}='{val}' vs extracted times={all_times}"
+                    else:
+                        extracted = extract_for_role(role, user_text)
+                        if extracted is not None:
+                            ext_norm = extracted.strip().lower()
+                            val_norm = val.strip().lower()
+                            # Require exact match - no partial matching allowed
+                            if ext_norm != val_norm:
+                                return False, f"extract-mismatch:{pname}='{val}' vs extracted='{extracted}'"
 
             # Integer range checks
             if ptype == "integer" and isinstance(val, (int, float)):
