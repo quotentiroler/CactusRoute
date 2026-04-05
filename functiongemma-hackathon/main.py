@@ -733,9 +733,11 @@ def _segment_query(user_text):
     return [p.strip() for p in parts if len(p.strip()) > 3]
 
 
-_PROPER_NOUN_RE = re.compile(r'\b([A-Z][a-z]{1,})\b')
+_PROPER_NOUN_RE = re.compile(r'\b([A-Z][a-z]+)\b')
 _PRONOUN_RE = re.compile(r'\b(him|her|them)\b', re.I)
 
+# Common English words and command verbs that appear capitalized at sentence
+# start or in titles but are NOT proper nouns (person/place names).
 _COMMON_WORDS = frozenset({
     "Set", "Get", "Send", "Play", "Find", "Check", "Remind", "Text",
     "Look", "Wake", "Call", "Start", "Stop", "What", "How", "The",
@@ -745,7 +747,13 @@ _COMMON_WORDS = frozenset({
 
 
 def _extract_proper_nouns(text):
-    """Extract proper nouns (capitalized words excluding common words) from text."""
+    """Extract likely proper nouns (capitalized words) from text.
+
+    Limitations: does not handle multi-word proper nouns (e.g., 'New York')
+    or sentence-initial capitalization that coincides with a common word.
+    Single-character initials and all-caps abbreviations are also excluded
+    because the pattern requires at least one lowercase letter after the capital.
+    """
     return [m.group(1) for m in _PROPER_NOUN_RE.finditer(text)
             if m.group(1) not in _COMMON_WORDS]
 
@@ -756,6 +764,11 @@ def build_calls_from_segments(user_text, tools):
     Uses cross-segment pronoun resolution: when a later segment references
     a pronoun (him/her/them), substitute the most recently mentioned proper
     noun from earlier segments to recover the missing entity.
+
+    Limitation: pronoun resolution substitutes the last known name for ALL
+    pronoun occurrences in the segment. Segments with multiple different
+    pronouns referring to different people are not handled; such cases are
+    uncommon in the benchmark and fall back to the full-text extraction path.
     """
     segments = _segment_query(user_text)
     if len(segments) <= 1:
@@ -769,7 +782,9 @@ def build_calls_from_segments(user_text, tools):
         seg_calls = build_calls_from_text(seg, tools)
 
         # Pronoun resolution: if segment uses pronouns and direct extraction
-        # failed, substitute the most recently mentioned proper noun
+        # failed, substitute the most recently mentioned proper noun.
+        # Only triggered when no calls were built — avoids touching segments
+        # that already succeeded.
         if not seg_calls and _PRONOUN_RE.search(seg) and mentioned_names:
             last_name = mentioned_names[-1]
             resolved = _PRONOUN_RE.sub(last_name, seg)
