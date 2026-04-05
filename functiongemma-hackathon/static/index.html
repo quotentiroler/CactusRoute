@@ -1,0 +1,867 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CactusRoute — Adaptive Hybrid Router</title>
+  <style>
+    /* ── Reset & base ────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg:        #0d1117;
+      --surface:   #161b22;
+      --surface2:  #1f2937;
+      --border:    #30363d;
+      --accent:    #3fb950;
+      --accent2:   #58a6ff;
+      --warn:      #d29922;
+      --cloud:     #8b5cf6;
+      --danger:    #f85149;
+      --text:      #e6edf3;
+      --muted:     #8b949e;
+      --radius:    8px;
+      --mono:      'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace;
+    }
+    html { font-size: 15px; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      line-height: 1.5;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    a { color: var(--accent2); }
+    input, textarea, select {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+      font-size: 0.9rem;
+      padding: 0.45rem 0.7rem;
+      width: 100%;
+      outline: none;
+      transition: border-color .15s;
+    }
+    input:focus, textarea:focus, select:focus { border-color: var(--accent2); }
+    button {
+      border: none;
+      border-radius: var(--radius);
+      cursor: pointer;
+      font-size: 0.9rem;
+      font-weight: 600;
+      padding: 0.5rem 1.1rem;
+      transition: opacity .15s, transform .1s;
+    }
+    button:hover { opacity: .88; }
+    button:active { transform: scale(.97); }
+    .btn-primary  { background: var(--accent);  color: #000; }
+    .btn-secondary{ background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
+    .btn-danger   { background: var(--danger);  color: #fff; }
+    .btn-sm { font-size: 0.78rem; padding: 0.3rem 0.7rem; }
+
+    /* ── Layout ──────────────────────────────────────────────────── */
+    header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 0.9rem 1.5rem;
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+    }
+    header .logo { font-size: 1.5rem; }
+    header h1 { font-size: 1.15rem; font-weight: 700; }
+    header .sub { font-size: 0.8rem; color: var(--muted); margin-top: .1rem; }
+    header .health-dot {
+      margin-left: auto;
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      background: var(--muted);
+      flex-shrink: 0;
+    }
+    header .health-dot.ok     { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
+    header .health-dot.mock   { background: var(--warn);   box-shadow: 0 0 6px var(--warn); }
+    header .health-dot.error  { background: var(--danger); box-shadow: 0 0 6px var(--danger); }
+    header .health-label { font-size: .75rem; color: var(--muted); }
+
+    .main-grid {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 380px 1fr 260px;
+      grid-template-rows: auto;
+      gap: 0;
+      overflow: hidden;
+    }
+    @media (max-width: 1000px) {
+      .main-grid { grid-template-columns: 1fr; grid-template-rows: none; }
+      .panel-right { display: none; }
+    }
+
+    /* ── Panels ──────────────────────────────────────────────────── */
+    .panel {
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .panel:last-child { border-right: none; }
+    .panel-title {
+      padding: .7rem 1rem;
+      font-size: .75rem;
+      font-weight: 700;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      color: var(--muted);
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+      flex-shrink: 0;
+    }
+    .panel-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 1rem;
+    }
+
+    /* ── Tool builder ────────────────────────────────────────────── */
+    .tool-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      margin-bottom: .75rem;
+    }
+    .tool-card-header {
+      display: flex;
+      align-items: center;
+      gap: .5rem;
+      padding: .6rem .8rem;
+      cursor: pointer;
+      user-select: none;
+    }
+    .tool-card-header .tool-name-badge {
+      font-family: var(--mono);
+      font-size: .78rem;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: .1rem .45rem;
+      flex: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .tool-card-body { padding: .8rem; border-top: 1px solid var(--border); }
+    .tool-card-body label { display: block; font-size: .78rem; color: var(--muted); margin-bottom: .2rem; }
+    .tool-card-body .field { margin-bottom: .6rem; }
+    .param-row {
+      display: grid;
+      grid-template-columns: 1fr 90px 1fr auto auto;
+      gap: .4rem;
+      align-items: center;
+      margin-bottom: .4rem;
+    }
+    .param-row input, .param-row select { font-size: .78rem; padding: .3rem .5rem; }
+    .required-toggle {
+      display: flex;
+      align-items: center;
+      gap: .25rem;
+      font-size: .75rem;
+      white-space: nowrap;
+    }
+
+    .examples-bar {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: .5rem 1rem;
+      display: flex;
+      gap: .5rem;
+      flex-wrap: wrap;
+      align-items: center;
+      flex-shrink: 0;
+    }
+    .examples-bar span { font-size: .72rem; color: var(--muted); margin-right: .25rem; }
+
+    /* ── Query area ──────────────────────────────────────────────── */
+    .query-area {
+      padding: 1rem;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .query-row {
+      display: flex;
+      gap: .5rem;
+    }
+    .query-row textarea {
+      flex: 1;
+      resize: none;
+      min-height: 60px;
+      font-size: .9rem;
+    }
+    .query-row button { align-self: flex-end; white-space: nowrap; }
+
+    /* ── Results ─────────────────────────────────────────────────── */
+    .result-area { flex: 1; overflow-y: auto; }
+    .result-empty {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      color: var(--muted);
+      gap: .5rem;
+      padding: 2rem;
+      text-align: center;
+    }
+    .result-empty .emoji { font-size: 3rem; }
+
+    .result-card {
+      margin: 1rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+    .result-header {
+      display: flex;
+      align-items: center;
+      gap: .6rem;
+      padding: .7rem 1rem;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface2);
+      flex-wrap: wrap;
+    }
+    .badge {
+      border-radius: 4px;
+      font-size: .72rem;
+      font-weight: 700;
+      padding: .18rem .5rem;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      white-space: nowrap;
+    }
+    .badge-ondevice  { background: #0d2d1a; color: var(--accent); border: 1px solid #1e5c33; }
+    .badge-cloud     { background: #1a0d2d; color: var(--cloud);  border: 1px solid #4a1e7a; }
+    .badge-mock      { background: #2d2200; color: var(--warn);   border: 1px solid #5c4800; }
+    .badge-easy      { background: #0d2d1a; color: #4ade80; }
+    .badge-medium    { background: #2d1e00; color: #fbbf24; }
+    .badge-hard      { background: #2d0d0d; color: #f87171; }
+
+    .latency-tag { font-size: .78rem; color: var(--muted); margin-left: auto; }
+
+    .result-body { padding: 1rem; }
+
+    .confidence-block { margin-bottom: 1rem; }
+    .confidence-block .label {
+      display: flex;
+      justify-content: space-between;
+      font-size: .75rem;
+      color: var(--muted);
+      margin-bottom: .2rem;
+    }
+    .bar-track {
+      height: 6px;
+      border-radius: 3px;
+      background: var(--surface2);
+      overflow: hidden;
+    }
+    .bar-fill {
+      height: 100%;
+      border-radius: 3px;
+      transition: width .4s ease;
+    }
+    .bar-fill.high   { background: var(--accent); }
+    .bar-fill.medium { background: var(--warn); }
+    .bar-fill.low    { background: var(--danger); }
+
+    .calls-title {
+      font-size: .75rem;
+      font-weight: 700;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      margin-bottom: .5rem;
+    }
+    .call-block {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: .6rem .8rem;
+      font-family: var(--mono);
+      font-size: .82rem;
+      margin-bottom: .4rem;
+    }
+    .call-fn-name { color: var(--accent2); font-weight: 700; }
+    .call-paren   { color: var(--muted); }
+    .call-key     { color: var(--warn); }
+    .call-val-str { color: #79c0ff; }
+    .call-val-num { color: #f2cc60; }
+    .call-val-bool{ color: #ff7b72; }
+
+    /* ── History ─────────────────────────────────────────────────── */
+    .history-item {
+      border-bottom: 1px solid var(--border);
+      padding: .6rem .8rem;
+      cursor: pointer;
+      transition: background .1s;
+    }
+    .history-item:hover { background: var(--surface2); }
+    .history-item .q { font-size: .8rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .history-item .meta {
+      display: flex;
+      gap: .4rem;
+      margin-top: .2rem;
+      flex-wrap: wrap;
+    }
+
+    /* ── Right panel — metrics ───────────────────────────────────── */
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: .6rem;
+      margin-bottom: 1rem;
+    }
+    .metric-box {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: .6rem .7rem;
+      text-align: center;
+    }
+    .metric-box .val { font-size: 1.3rem; font-weight: 800; color: var(--accent2); }
+    .metric-box .lbl { font-size: .68rem; color: var(--muted); margin-top: .1rem; }
+
+    .recent-title {
+      font-size: .72rem;
+      font-weight: 700;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: .07em;
+      margin-bottom: .5rem;
+    }
+    .recent-row {
+      display: flex;
+      align-items: center;
+      gap: .4rem;
+      font-size: .72rem;
+      padding: .25rem 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .recent-dot {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .recent-dot.on  { background: var(--accent); }
+    .recent-dot.off { background: var(--cloud); }
+
+    .spinner {
+      display: inline-block;
+      width: 18px; height: 18px;
+      border: 2px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin .7s linear infinite;
+      vertical-align: middle;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Toast ───────────────────────────────────────────────────── */
+    #toast {
+      position: fixed;
+      bottom: 1.5rem;
+      right: 1.5rem;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: .6rem 1rem;
+      font-size: .85rem;
+      opacity: 0;
+      transform: translateY(8px);
+      transition: opacity .2s, transform .2s;
+      pointer-events: none;
+      z-index: 9999;
+      max-width: 320px;
+    }
+    #toast.show { opacity: 1; transform: translateY(0); }
+
+    /* ── Scrollbar ───────────────────────────────────────────────── */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  </style>
+</head>
+<body>
+
+<!-- ═══════════════════════════ HEADER ════════════════════════════════════ -->
+<header>
+  <span class="logo">🌵</span>
+  <div>
+    <h1>CactusRoute</h1>
+    <div class="sub">Adaptive Edge / Cloud Hybrid Router</div>
+  </div>
+  <div style="margin-left:auto; display:flex; align-items:center; gap:.5rem;">
+    <span class="health-label" id="health-label">checking…</span>
+    <span class="health-dot" id="health-dot"></span>
+  </div>
+</header>
+
+<!-- ═══════════════════════════ MAIN ══════════════════════════════════════ -->
+<div class="main-grid">
+
+  <!-- ── LEFT: Tool builder ──────────────────────────────────────────── -->
+  <div class="panel">
+    <div class="panel-title">🔧 Tool Schema Builder</div>
+
+    <!-- Quick-load examples -->
+    <div class="examples-bar">
+      <span>Examples:</span>
+      <div id="example-btns"></div>
+    </div>
+
+    <div class="panel-body" id="tools-body">
+      <!-- tool cards injected here -->
+    </div>
+
+    <div style="padding:.75rem 1rem; border-top:1px solid var(--border); background:var(--surface); flex-shrink:0; display:flex; gap:.5rem;">
+      <button class="btn-secondary btn-sm" onclick="addTool()">+ Add Tool</button>
+      <button class="btn-secondary btn-sm" onclick="clearTools()">Clear All</button>
+    </div>
+  </div>
+
+  <!-- ── CENTRE: Query + Results ──────────────────────────────────────── -->
+  <div class="panel" style="border-right:none;">
+
+    <!-- Query input -->
+    <div class="query-area">
+      <div class="query-row">
+        <textarea id="query-input" rows="2"
+          placeholder="Enter your natural language query… e.g. 'What's the weather in Paris?'"
+          onkeydown="handleQueryKey(event)"></textarea>
+        <button class="btn-primary" onclick="runQuery()" id="run-btn">▶ Run</button>
+      </div>
+    </div>
+
+    <!-- Results -->
+    <div class="result-area" id="result-area">
+      <div class="result-empty">
+        <span class="emoji">🌵</span>
+        <strong>Ready to route</strong>
+        <span>Build your tool schema on the left,<br>type a query above, then hit Run.</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── RIGHT: Metrics + History ─────────────────────────────────────── -->
+  <div class="panel panel-right">
+    <div class="panel-title">📊 Session Metrics</div>
+    <div class="panel-body">
+      <div class="metrics-grid" id="metrics-grid">
+        <div class="metric-box"><div class="val" id="m-total">—</div><div class="lbl">Requests</div></div>
+        <div class="metric-box"><div class="val" id="m-ondevice">—</div><div class="lbl">On-Device %</div></div>
+        <div class="metric-box"><div class="val" id="m-latency">—</div><div class="lbl">Avg Latency</div></div>
+        <div class="metric-box"><div class="val" id="m-cloud">—</div><div class="lbl">Cloud calls</div></div>
+      </div>
+
+      <div class="recent-title">Recent Requests</div>
+      <div id="recent-list"></div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ─── History panel (full width, below on mobile — hidden on desktop) ── -->
+<div id="toast"></div>
+
+<script>
+// ══════════════════════════════════════════════════════════════════════════
+// State
+// ══════════════════════════════════════════════════════════════════════════
+const API = '';  // same origin
+let tools = [];
+let history = [];
+let examples = [];
+
+// ══════════════════════════════════════════════════════════════════════════
+// Init
+// ══════════════════════════════════════════════════════════════════════════
+window.addEventListener('DOMContentLoaded', async () => {
+  await checkHealth();
+  await loadExamples();
+  addTool();            // start with one empty tool
+  setInterval(refreshMetrics, 5000);
+});
+
+// ══════════════════════════════════════════════════════════════════════════
+// Health check
+// ══════════════════════════════════════════════════════════════════════════
+async function checkHealth() {
+  const dot   = document.getElementById('health-dot');
+  const label = document.getElementById('health-label');
+  try {
+    const r = await fetch(`${API}/api/health`);
+    const d = await r.json();
+    if (d.status === 'ok') {
+      if (d.mock_mode) {
+        dot.className = 'health-dot mock';
+        label.textContent = 'Mock mode';
+      } else {
+        dot.className = 'health-dot ok';
+        const modelName = d.models && d.models.on_device
+          ? d.models.on_device.split('(')[0].trim()
+          : 'Live';
+        label.textContent = 'Live — ' + modelName;
+      }
+    } else {
+      dot.className = 'health-dot error';
+      label.textContent = 'Degraded';
+    }
+  } catch {
+    dot.className = 'health-dot error';
+    label.textContent = 'Offline';
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// Examples
+// ══════════════════════════════════════════════════════════════════════════
+async function loadExamples() {
+  try {
+    const r = await fetch(`${API}/api/schema/examples`);
+    examples = await r.json();
+    const bar = document.getElementById('example-btns');
+    bar.innerHTML = '';
+    examples.forEach((ex, i) => {
+      const btn = document.createElement('button');
+      btn.className = 'btn-secondary btn-sm';
+      btn.textContent = ex.label;
+      btn.onclick = () => loadExample(i);
+      bar.appendChild(btn);
+    });
+  } catch {}
+}
+
+function loadExample(idx) {
+  const ex = examples[idx];
+  if (!ex) return;
+  tools = ex.tools.map(t => ({
+    name: t.name,
+    description: t.description,
+    params: Object.entries(t.parameters.properties || {}).map(([n, p]) => ({
+      name: n,
+      type: p.type,
+      description: p.description || '',
+      required: (t.parameters.required || []).includes(n),
+    })),
+  }));
+  document.getElementById('query-input').value = ex.query;
+  renderTools();
+  toast(`Loaded: ${ex.label}`);
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// Tool builder
+// ══════════════════════════════════════════════════════════════════════════
+function newTool() {
+  return { name: '', description: '', params: [], _open: true };
+}
+function newParam() {
+  return { name: '', type: 'string', description: '', required: true };
+}
+
+function addTool() {
+  tools.push(newTool());
+  renderTools();
+}
+
+function clearTools() {
+  tools = [];
+  renderTools();
+}
+
+function removeTool(i) {
+  tools.splice(i, 1);
+  renderTools();
+}
+
+function toggleTool(i) {
+  tools[i]._open = !tools[i]._open;
+  renderTools();
+}
+
+function addParam(i) {
+  tools[i].params.push(newParam());
+  renderTools();
+}
+
+function removeParam(i, j) {
+  tools[i].params.splice(j, 1);
+  renderTools();
+}
+
+function renderTools() {
+  const body = document.getElementById('tools-body');
+  if (tools.length === 0) {
+    body.innerHTML = '<div style="color:var(--muted);font-size:.85rem;padding:.5rem 0">No tools defined. Click "+ Add Tool" below.</div>';
+    return;
+  }
+  body.innerHTML = tools.map((t, i) => `
+    <div class="tool-card">
+      <div class="tool-card-header" onclick="toggleTool(${i})">
+        <span style="color:var(--muted);font-size:.8rem;flex-shrink:0">#${i+1}</span>
+        <span class="tool-name-badge">${escHtml(t.name || 'unnamed')}</span>
+        <button class="btn-danger btn-sm" onclick="event.stopPropagation();removeTool(${i})">✕</button>
+        <span style="color:var(--muted);font-size:.8rem">${t._open ? '▲' : '▼'}</span>
+      </div>
+      ${t._open ? `
+      <div class="tool-card-body">
+        <div class="field">
+          <label>Function name</label>
+          <input type="text" placeholder="e.g. get_weather" value="${escHtml(t.name)}"
+            oninput="tools[${i}].name=this.value" />
+        </div>
+        <div class="field">
+          <label>Description</label>
+          <input type="text" placeholder="What this function does" value="${escHtml(t.description)}"
+            oninput="tools[${i}].description=this.value" />
+        </div>
+        <div class="field">
+          <label>Parameters</label>
+          ${t.params.map((p, j) => `
+            <div class="param-row">
+              <input type="text" placeholder="name" value="${escHtml(p.name)}"
+                oninput="tools[${i}].params[${j}].name=this.value" />
+              <select onchange="tools[${i}].params[${j}].type=this.value">
+                ${['string','integer','number','boolean'].map(tp =>
+                  `<option value="${tp}" ${p.type===tp?'selected':''}>${tp}</option>`).join('')}
+              </select>
+              <input type="text" placeholder="description" value="${escHtml(p.description)}"
+                oninput="tools[${i}].params[${j}].description=this.value" />
+              <label class="required-toggle">
+                <input type="checkbox" ${p.required?'checked':''} onchange="tools[${i}].params[${j}].required=this.checked" />
+                req
+              </label>
+              <button class="btn-danger btn-sm" onclick="removeParam(${i},${j})">✕</button>
+            </div>
+          `).join('')}
+          <button class="btn-secondary btn-sm" style="margin-top:.3rem" onclick="addParam(${i})">+ Parameter</button>
+        </div>
+      </div>
+      ` : ''}
+    </div>
+  `).join('');
+}
+
+function buildToolsPayload() {
+  return tools.map(t => ({
+    name: t.name || 'unnamed',
+    description: t.description || 'No description',
+    parameters: {
+      type: 'object',
+      properties: Object.fromEntries(
+        t.params.map(p => [p.name || 'param', {
+          type: p.type,
+          description: p.description,
+        }])
+      ),
+      required: t.params.filter(p => p.required).map(p => p.name || 'param'),
+    },
+  }));
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// Query / Run
+// ══════════════════════════════════════════════════════════════════════════
+function handleQueryKey(e) {
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+    e.preventDefault();
+    runQuery();
+  }
+}
+
+async function runQuery() {
+  const q = document.getElementById('query-input').value.trim();
+  if (!q) { toast('Enter a query first'); return; }
+
+  const payload = buildToolsPayload();
+  if (payload.length === 0) { toast('Add at least one tool'); return; }
+
+  const btn = document.getElementById('run-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>';
+
+  showLoading();
+
+  try {
+    const resp = await fetch(`${API}/api/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messages: [{ role: 'user', content: q }],
+        tools: payload,
+      }),
+    });
+
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+      throw new Error(err.detail || resp.statusText);
+    }
+
+    const result = await resp.json();
+    displayResult(q, result);
+    history.unshift({ q, result });
+    await refreshMetrics();
+  } catch (err) {
+    showError(err.message);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '▶ Run';
+  }
+}
+
+function showLoading() {
+  document.getElementById('result-area').innerHTML = `
+    <div class="result-empty">
+      <span class="spinner" style="width:36px;height:36px;border-width:3px"></span>
+      <span style="color:var(--muted)">Routing query…</span>
+    </div>`;
+}
+
+function showError(msg) {
+  document.getElementById('result-area').innerHTML = `
+    <div class="result-empty">
+      <span class="emoji">⚠️</span>
+      <strong style="color:var(--danger)">Request failed</strong>
+      <span style="color:var(--muted);font-size:.82rem">${escHtml(msg)}</span>
+    </div>`;
+}
+
+function displayResult(query, r) {
+  const isOnDevice  = !r.source.startsWith('cloud');
+  const conf        = r.confidence ?? 0;
+  const confClass   = conf >= .75 ? 'high' : conf >= .45 ? 'medium' : 'low';
+  const localConf   = r.local_confidence;
+
+  const sourceBadge = isOnDevice
+    ? `<span class="badge badge-ondevice">🖥 On-Device</span>`
+    : `<span class="badge badge-cloud">☁ Cloud</span>`;
+
+  const mockBadge = r.mock
+    ? `<span class="badge badge-mock">Mock</span>` : '';
+
+  const diffBadge = `<span class="badge badge-${r.difficulty}">${r.difficulty}</span>`;
+
+  const callsHtml = (r.function_calls || []).map(c => {
+    const args = Object.entries(c.arguments || {}).map(([k, v]) => {
+      let vHtml;
+      if (typeof v === 'string')       vHtml = `<span class="call-val-str">"${escHtml(v)}"</span>`;
+      else if (typeof v === 'boolean') vHtml = `<span class="call-val-bool">${v}</span>`;
+      else                             vHtml = `<span class="call-val-num">${v}</span>`;
+      return `<span class="call-key">${escHtml(k)}</span><span class="call-paren">=</span>${vHtml}`;
+    }).join('<span class="call-paren">, </span>');
+    return `<div class="call-block">
+      <span class="call-fn-name">${escHtml(c.name)}</span><span class="call-paren">(</span>${args}<span class="call-paren">)</span>
+    </div>`;
+  }).join('');
+
+  const detailHint = r.detail !== r.source
+    ? `<span style="font-size:.72rem;color:var(--muted)">${escHtml(r.detail)}</span>` : '';
+
+  document.getElementById('result-area').innerHTML = `
+    <div class="result-card">
+      <div class="result-header">
+        ${sourceBadge}${mockBadge}${diffBadge}
+        ${detailHint}
+        <span class="latency-tag">⏱ ${r.total_time_ms.toFixed(1)} ms</span>
+      </div>
+      <div class="result-body">
+
+        <div style="font-size:.78rem;color:var(--muted);margin-bottom:.8rem;font-style:italic">
+          "${escHtml(query)}"
+        </div>
+
+        <div class="confidence-block">
+          <div class="label">
+            <span>Confidence</span>
+            <span>${(conf * 100).toFixed(1)}%</span>
+          </div>
+          <div class="bar-track">
+            <div class="bar-fill ${confClass}" style="width:${(conf*100).toFixed(1)}%"></div>
+          </div>
+        </div>
+
+        ${localConf != null ? `
+        <div class="confidence-block">
+          <div class="label">
+            <span>Local confidence (pre-handoff)</span>
+            <span>${(localConf * 100).toFixed(1)}%</span>
+          </div>
+          <div class="bar-track">
+            <div class="bar-fill low" style="width:${(localConf*100).toFixed(1)}%"></div>
+          </div>
+        </div>` : ''}
+
+        <div class="calls-title">Function calls (${(r.function_calls||[]).length})</div>
+        ${callsHtml || '<div style="color:var(--muted);font-size:.82rem">No calls produced</div>'}
+
+        ${r.cloud_handoff || r.spike_handoff ? `
+        <div style="margin-top:.8rem;font-size:.75rem;color:var(--muted);">
+          ${r.cloud_handoff ? '⚡ Cloud handoff triggered (high first-token entropy)' : ''}
+          ${r.spike_handoff ? '⚡ Spike handoff triggered (mid-generation entropy spike)' : ''}
+        </div>` : ''}
+      </div>
+    </div>`;
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// Metrics
+// ══════════════════════════════════════════════════════════════════════════
+async function refreshMetrics() {
+  try {
+    const r = await fetch(`${API}/api/metrics`);
+    const d = await r.json();
+
+    const n = d.total_requests;
+    const cloud = n - d.on_device_requests;
+    document.getElementById('m-total').textContent    = n;
+    document.getElementById('m-ondevice').textContent = n ? Math.round(d.on_device_ratio * 100) + '%' : '—';
+    document.getElementById('m-latency').textContent  = n ? d.avg_latency_ms.toFixed(1) + 'ms' : '—';
+    document.getElementById('m-cloud').textContent    = cloud;
+
+    const list = document.getElementById('recent-list');
+    list.innerHTML = (d.recent || []).slice().reverse().map(row => `
+      <div class="recent-row">
+        <span class="recent-dot ${row.on_device ? 'on' : 'off'}"></span>
+        <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(row.source)}</span>
+        <span style="color:var(--muted)">${row.difficulty}</span>
+        <span style="color:var(--muted)">${row.latency_ms}ms</span>
+      </div>
+    `).join('');
+  } catch {}
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// Toast
+// ══════════════════════════════════════════════════════════════════════════
+let _toastTimer;
+function toast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => el.classList.remove('show'), 2500);
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// Helpers
+// ══════════════════════════════════════════════════════════════════════════
+function escHtml(s) {
+  if (s == null) return '';
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+</script>
+</body>
+</html>

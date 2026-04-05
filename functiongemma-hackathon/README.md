@@ -244,6 +244,83 @@ for chunk in chunks:
     print(f"Score: {chunk['score']:.2f} - {chunk['text'][:100]}...")
 ```
 
+## REST API & Web UI
+
+CactusRoute ships a FastAPI server (`server.py`) that exposes the 7-layer router over HTTP and serves a built-in single-page web interface.
+
+### Quick start
+
+```bash
+# With real Cactus SDK (Mac + model weights required):
+export GEMINI_API_KEY="your-key"
+python server.py
+
+# Without Cactus SDK (mock mode — for UI development / demos):
+python server.py --mock
+```
+
+Open **http://localhost:8000** in your browser to use the visual tool-schema builder and routing playground.
+
+### Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/generate` | Route a query through the 7-layer framework |
+| `GET`  | `/api/health`   | Service + model readiness |
+| `GET`  | `/api/metrics`  | Session-level aggregated statistics |
+| `GET`  | `/api/schema/examples` | Pre-built tool schemas for quick demos |
+| `GET`  | `/`             | Web UI (served from `static/index.html`) |
+| `GET`  | `/docs`         | Interactive OpenAPI (Swagger) docs |
+
+### Example request
+
+```bash
+curl -s -X POST http://localhost:8000/api/generate \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "messages": [{"role": "user", "content": "Set my alarm for 7:30 AM"}],
+    "tools": [{
+      "name": "set_alarm",
+      "description": "Set an alarm",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "hour":   {"type": "integer", "description": "Hour (0–23)"},
+          "minute": {"type": "integer", "description": "Minute (0–59)"}
+        },
+        "required": ["hour", "minute"]
+      }
+    }]
+  }'
+```
+
+**Response:**
+```json
+{
+  "function_calls": [{"name": "set_alarm", "arguments": {"hour": 7, "minute": 30}}],
+  "source": "on-device",
+  "detail": "on-device",
+  "difficulty": "easy",
+  "confidence": 0.94,
+  "local_confidence": null,
+  "total_time_ms": 112.5,
+  "cloud_handoff": false,
+  "spike_handoff": false,
+  "mock": false
+}
+```
+
+### CLI options
+
+```
+python server.py --help
+
+  --host    Bind address (default: 0.0.0.0)
+  --port    Bind port (default: 8000)
+  --mock    Mock mode — no Cactus SDK required
+  --reload  Auto-reload on file changes (development)
+```
+
 ## Next steps:
 - Join the [Reddit channel](https://www.reddit.com/r/cactuscompute/), ask any technical questions there.
-- To gain some technical insights on AI, checkout [Maths, CS & AI Compendium](https://github.com/HenryNdubuaku/maths-cs-ai-compendium). 
+- To gain some technical insights on AI, checkout [Maths, CS & AI Compendium](https://github.com/HenryNdubuaku/maths-cs-ai-compendium).
