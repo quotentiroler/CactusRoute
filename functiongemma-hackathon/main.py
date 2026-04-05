@@ -327,6 +327,7 @@ def infer_param_role(param_name, param_info):
 
 _TIME_RE = re.compile(r'(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b', re.I)
 _DURATION_RE = re.compile(r'(\d+)\s*(?:minutes?|mins?)\b', re.I)
+_24H_TIME_RE = re.compile(r'^(\d{1,2}):(\d{2})$')
 
 
 def _extract_all_times(text: str) -> list[str]:
@@ -353,7 +354,8 @@ _MSG_PATTERNS = [
     ),
 ]
 
-_PLAY_RE = re.compile(r'play\s+(?:some\s+)?(.+?)(?:\s+and\s+|[,.!?]|$)', re.I)
+_PLAY_SOME_RE = re.compile(r'play\s+some\s+(.+?)(?:\s+and\s+|[,.!?]|$)', re.I)
+_PLAY_RE = re.compile(r'play\s+(.+?)(?:\s+and\s+|[,.!?]|$)', re.I)
 
 # Location: capitalized words after "in" near weather, or standalone "in [City]"
 _LOC_PATTERNS = [
@@ -442,13 +444,17 @@ def extract_for_role(role, user_text):
         return f"{hour}:{minute:02d} {ampm}"
 
     if role == ROLE_SONG:
-        m = _PLAY_RE.search(user_text)
+        # "Play some X music" → strip trailing " music" (generic genre qualifier)
+        m = _PLAY_SOME_RE.search(user_text)
         if m:
             song = m.group(1).strip().rstrip('.,!?')
-            # Strip trailing "music" since users say "play X music" but mean just "X"
             if song.lower().endswith(' music'):
                 song = song[:-6].strip()
             return song
+        # "Play X" → keep as-is (song title or genre phrase like "classical music")
+        m = _PLAY_RE.search(user_text)
+        if m:
+            return m.group(1).strip().rstrip('.,!?')
         return None
 
     if role == ROLE_QUERY:
@@ -588,6 +594,14 @@ def repair_output(calls, tools, user_text, tool_map=None,
 
             val = args[pname]
 
+            # Convert 24h time string to 12h AM/PM format ("14:00" → "2:00 PM")
+            if role == ROLE_TIME_STR and isinstance(val, str):
+                m24 = _24H_TIME_RE.match(val.strip())
+                if m24:
+                    ext = extract_for_role(ROLE_TIME_STR, user_text)
+                    if ext is not None:
+                        args[pname] = ext
+
             # AM/PM hour correction
             if role == ROLE_HOUR and isinstance(val, (int, float, str)):
                 try:
@@ -719,16 +733,53 @@ def _segment_query(user_text):
     return [p.strip() for p in parts if len(p.strip()) > 3]
 
 
+_PROPER_NOUN_RE = re.compile(r'\b([A-Z][a-z]{1,})\b')
+_PRONOUN_RE = re.compile(r'\b(him|her|them)\b', re.I)
+
+_COMMON_WORDS = frozenset({
+    "Set", "Get", "Send", "Play", "Find", "Check", "Remind", "Text",
+    "Look", "Wake", "Call", "Start", "Stop", "What", "How", "The",
+    "And", "But", "For", "Its", "His", "Her", "My", "Me", "Am", "PM",
+    "In", "At", "To", "On", "Up",
+})
+
+
+def _extract_proper_nouns(text):
+    """Extract proper nouns (capitalized words excluding common words) from text."""
+    return [m.group(1) for m in _PROPER_NOUN_RE.finditer(text)
+            if m.group(1) not in _COMMON_WORDS]
+
+
 def build_calls_from_segments(user_text, tools):
-    """Decompose query into segments and extract calls per segment."""
+    """Decompose query into segments and extract calls per segment.
+
+    Uses cross-segment pronoun resolution: when a later segment references
+    a pronoun (him/her/them), substitute the most recently mentioned proper
+    noun from earlier segments to recover the missing entity.
+    """
     segments = _segment_query(user_text)
     if len(segments) <= 1:
         return build_calls_from_text(user_text, tools)
 
     all_calls = []
     used_tools = set()
+    mentioned_names = []  # proper nouns accumulated from processed segments
+
     for seg in segments:
         seg_calls = build_calls_from_text(seg, tools)
+
+        # Pronoun resolution: if segment uses pronouns and direct extraction
+        # failed, substitute the most recently mentioned proper noun
+        if not seg_calls and _PRONOUN_RE.search(seg) and mentioned_names:
+            last_name = mentioned_names[-1]
+            resolved = _PRONOUN_RE.sub(last_name, seg)
+            seg_calls = build_calls_from_text(resolved, tools)
+
+        # Collect proper nouns from this segment for future segments
+        for noun in _extract_proper_nouns(seg):
+            if noun not in mentioned_names:
+                mentioned_names.append(noun)
+
         for c in seg_calls:
             if c["name"] not in used_tools:
                 used_tools.add(c["name"])
@@ -750,6 +801,15 @@ _SYSTEM_PROMPTS = [
     (
         "You MUST call one of the available functions. Extract all parameter "
         "values directly from the user's message. Match parameter types precisely."
+    ),
+    (
+        "Call the most relevant tool for the user's request. "
+        "Read the user message carefully and extract exact values — "
+        "do not guess or invent values not present in the message."
+    ),
+    (
+        "Use the available tools to fulfill the user's request. "
+        "Each required parameter must come directly from what the user said."
     ),
 ]
 

@@ -580,6 +580,18 @@ class TestExtractForRole(unittest.TestCase):
         # "Play some jazz music" should extract "jazz" not "jazz music" — benchmark expects "jazz"
         self.assertEqual(extract_for_role(ROLE_SONG, "Play some jazz music"), "jazz")
 
+    def test_song_play_classical_music(self):
+        # "play classical music" has no "some" → keep "classical music" (benchmark expects full phrase)
+        self.assertEqual(extract_for_role(ROLE_SONG, "play classical music"), "classical music")
+
+    def test_song_play_lo_fi_beats(self):
+        # No "some" → keep as-is
+        self.assertEqual(extract_for_role(ROLE_SONG, "play lo-fi beats"), "lo-fi beats")
+
+    def test_song_play_summer_hits(self):
+        # No "some" → keep as-is
+        self.assertEqual(extract_for_role(ROLE_SONG, "Play summer hits"), "summer hits")
+
     def test_query_find(self):
         self.assertEqual(extract_for_role(ROLE_QUERY, "Find Bob in my contacts"), "Bob")
 
@@ -682,6 +694,42 @@ class TestRepairOutput(unittest.TestCase):
         calls = [{"name": "get_weather", "arguments": {"location": "Paris"}}]
         repaired = repair_output(calls, [TOOL_GET_WEATHER], "What's the weather in Paris?")
         self.assertEqual(repaired[0]["arguments"]["location"], "Paris")
+
+    def test_24h_time_string_repaired(self):
+        """24h time format ('14:00') should be converted to 12h AM/PM."""
+        TOOL_REMINDER = {
+            "name": "create_reminder",
+            "description": "Create a reminder",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Reminder title"},
+                    "time": {"type": "string", "description": "Time for reminder"},
+                },
+                "required": ["title", "time"],
+            },
+        }
+        calls = [{"name": "create_reminder", "arguments": {"title": "call dentist", "time": "14:00"}}]
+        repaired = repair_output(calls, [TOOL_REMINDER], "Remind me to call dentist at 2:00 PM.")
+        self.assertEqual(repaired[0]["arguments"]["time"], "2:00 PM")
+
+    def test_12h_time_string_unchanged(self):
+        """Valid 12h time format should not be modified."""
+        TOOL_REMINDER = {
+            "name": "create_reminder",
+            "description": "Create a reminder",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Reminder title"},
+                    "time": {"type": "string", "description": "Time for reminder"},
+                },
+                "required": ["title", "time"],
+            },
+        }
+        calls = [{"name": "create_reminder", "arguments": {"title": "call dentist", "time": "2:00 PM"}}]
+        repaired = repair_output(calls, [TOOL_REMINDER], "Remind me to call dentist at 2:00 PM.")
+        self.assertEqual(repaired[0]["arguments"]["time"], "2:00 PM")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1516,6 +1564,39 @@ class TestBuildCallsFromSegments(unittest.TestCase):
             "Do something completely random", [TOOL_CUSTOM],
         )
         self.assertEqual(len(calls), 0)
+
+    def test_pronoun_resolution_him(self):
+        """'send him a message' should resolve 'him' to Tom from prior segment."""
+        calls = build_calls_from_segments(
+            "Find Tom in my contacts and send him a message saying happy birthday",
+            [TOOL_SEARCH_CONTACTS, TOOL_SEND_MESSAGE, TOOL_GET_WEATHER, TOOL_PLAY_MUSIC],
+        )
+        names = {c["name"] for c in calls}
+        self.assertIn("search_contacts", names)
+        self.assertIn("send_message", names)
+        msg_call = next(c for c in calls if c["name"] == "send_message")
+        self.assertEqual(msg_call["arguments"].get("recipient"), "Tom")
+        self.assertIn("happy birthday", msg_call["arguments"].get("message", ""))
+
+    def test_pronoun_resolution_preserves_message(self):
+        """Pronoun resolution should fill recipient but keep message content."""
+        calls = build_calls_from_segments(
+            "Look up Jake in my contacts and send him a message saying let's meet",
+            [TOOL_SEARCH_CONTACTS, TOOL_SEND_MESSAGE],
+        )
+        msg_calls = [c for c in calls if c["name"] == "send_message"]
+        self.assertEqual(len(msg_calls), 1)
+        self.assertEqual(msg_calls[0]["arguments"].get("recipient"), "Jake")
+
+    def test_classical_music_segment(self):
+        """'play classical music' in a segment should extract 'classical music', not 'classical'."""
+        calls = build_calls_from_segments(
+            "Set a 15 minute timer, play classical music, and remind me to stretch at 4:00 PM",
+            [TOOL_SET_TIMER, TOOL_PLAY_MUSIC, TOOL_CREATE_REMINDER, TOOL_GET_WEATHER, TOOL_SEND_MESSAGE],
+        )
+        music_calls = [c for c in calls if c["name"] == "play_music"]
+        self.assertEqual(len(music_calls), 1)
+        self.assertEqual(music_calls[0]["arguments"].get("song"), "classical music")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
